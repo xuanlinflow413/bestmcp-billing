@@ -1,0 +1,27 @@
+{
+  "name": "bestmcp-billing",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "test": "vitest",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.4",
+    "@types/node": "^25.9.2",
+    "typescript": "^5.5.2",
+    "vitest": "~3.2.0",
+    "wrangler": "^4.98.0"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "^4.20260607.1",
+    "@hono/zod-validator": "^0.8.0",
+    "hono": "^4.12.23",
+    "jose": "^6.2.3",
+    "stripe": "^22.2.0",
+    "zod": "^4.4.3"
+  }
+}

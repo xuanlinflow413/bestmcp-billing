@@ -1,0 +1,94 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "bestmcp-billing",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-07",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"assets": {
+		"directory": "./public"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bestmcp-billing-db",
+			"database_id": "bestmcp-billing-db"
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "KV_SESSIONS",
+			"id": "bestmcp-billing-sessions"
+		},
+		{
+			"binding": "KV_RATELIMIT",
+			"id": "bestmcp-billing-ratelimit"
+		},
+		{
+			"binding": "KV_CACHE",
+			"id": "bestmcp-billing-cache"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "R2_STORAGE",
+			"bucket_name": "bestmcp-billing-storage"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "QUEUE_WEBHOOK",
+				"queue": "bestmcp-billing-webhook"
+			},
+			{
+				"binding": "QUEUE_AUDIT",
+				"queue": "bestmcp-billing-audit"
+			},
+			{
+				"binding": "QUEUE_EMAIL",
+				"queue": "bestmcp-billing-email"
+			},
+			{
+				"binding": "QUEUE_CREDITS",
+				"queue": "bestmcp-billing-credits"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "bestmcp-billing-webhook",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			},
+			{
+				"queue": "bestmcp-billing-audit",
+				"max_batch_size": 100,
+				"max_batch_timeout": 10,
+				"max_retries": 3
+			},
+			{
+				"queue": "bestmcp-billing-email",
+				"max_batch_size": 50,
+				"max_batch_timeout": 5,
+				"max_retries": 5
+			},
+			{
+				"queue": "bestmcp-billing-credits",
+				"max_batch_size": 50,
+				"max_batch_timeout": 5,
+				"max_retries": 3
+			}
+		]
+	},
+	"vars": {
+		"APP_ENV": "production",
+		"APP_URL": "https://bestmcp-billing.xuanlinflow413.workers.dev",
+		"GOOGLE_OAUTH_REDIRECT_URI": "https://bestmcp-billing.xuanlinflow413.workers.dev/api/auth/google/callback"
+	}
+}
