@@ -62,7 +62,7 @@ export default {
 
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
     switch (batch.queue) {
-      case 'bestmcp-billing-webhook':
+      case 'bestmcp-billing-webhooks':
         await handleWebhookQueue(batch, env);
         break;
       case 'bestmcp-billing-audit':
