@@ -16,7 +16,21 @@ const app = new Hono<{ Bindings: Env }>();
 // 中间件
 app.use('*', logger());
 app.use('*', cors({
-  origin: (origin) => origin,
+  origin: (origin) => {
+    const allowed = [
+      'https://kindreply.co',
+      'https://www.kindreply.co',
+      'https://bestmcpservers.com',
+      'https://www.bestmcpservers.com',
+      'http://localhost:3000',
+      'http://localhost:3001',
+    ];
+    if (!origin) return null;
+    if (allowed.includes(origin)) return origin;
+    if (origin.endsWith('.kindreply.pages.dev')) return origin;
+    if (origin.endsWith('.mcp-server-directory.pages.dev')) return origin;
+    return null;
+  },
   credentials: true,
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
