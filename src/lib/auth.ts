@@ -17,7 +17,7 @@ export interface SessionPayload {
  */
 export async function createSession(
   user: User,
-  kv: KVNamespace,
+  kv: any,
   secret: string
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -46,7 +46,7 @@ export async function createSession(
  */
 export async function verifySession(
   token: string,
-  kv: KVNamespace,
+  kv: any,
   secret: string
 ): Promise<SessionPayload | null> {
   try {
@@ -72,7 +72,7 @@ export async function verifySession(
  */
 export async function destroySession(
   token: string,
-  kv: KVNamespace
+  kv: any
 ): Promise<void> {
   await kv.delete(`session:${token}`);
 }
@@ -81,6 +81,12 @@ export async function destroySession(
  * 从请求中提取 session token
  */
 export function getSessionToken(request: Request): string | null {
+  const authHeader = request.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token) return token;
+  }
+
   const cookie = request.headers.get('cookie');
   if (!cookie) return null;
 

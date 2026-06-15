@@ -228,11 +228,9 @@ INSERT OR IGNORE INTO products (id, slug, name, description) VALUES
 ('prod_bestmcp', 'bestmcp', 'BestMCPServers', 'MCP server directory and evaluation platform'),
 ('prod_kindreply', 'kindreply', 'KindReply', 'AI-powered reply assistant');
 
--- 插入套餐
+-- 插入 MVP 套餐。真实 Stripe price_id 通过部署后 D1 映射写入，不在源码里放占位 price_ 值。
 INSERT OR IGNORE INTO plans (id, product_id, slug, name, stripe_price_id, billing_interval, price_cents, credits_allocated, rate_limit_rpm, rate_limit_rpd) VALUES
-('plan_starter_monthly', 'prod_kindreply', 'starter_monthly', 'Starter Monthly', 'price_starter_monthly', 'month', 900, 1000, 30, 500),
-('plan_starter_yearly', 'prod_kindreply', 'starter_yearly', 'Starter Yearly', 'price_starter_yearly', 'year', 8600, 12000, 30, 500),
-('plan_pro_monthly', 'prod_bestmcp', 'pro_monthly', 'Pro Monthly', 'price_pro_monthly', 'month', 2900, 4000, 60, 2000),
-('plan_pro_yearly', 'prod_bestmcp', 'pro_yearly', 'Pro Yearly', 'price_pro_yearly', 'year', 27800, 48000, 60, 2000),
-('plan_team_monthly', 'prod_bestmcp', 'team_monthly', 'Team Monthly', 'price_team_monthly', 'month', 7900, 12000, 120, 10000),
-('plan_enterprise', 'prod_bestmcp', 'enterprise', 'Enterprise', NULL, 'month', 29900, 50000, 0, 0);
+('plan_bestmcp_free', 'prod_bestmcp', 'bestmcp-free', 'Free', NULL, NULL, 0, 100, 30, 500),
+('plan_bestmcp_pro', 'prod_bestmcp', 'bestmcp-pro', 'Pro', NULL, 'month', 999, 1000, 60, 2000),
+('plan_kindreply_free', 'prod_kindreply', 'kindreply-free', 'Free', NULL, NULL, 0, 50, 30, 500),
+('plan_kindreply_pro', 'prod_kindreply', 'kindreply-pro', 'Pro', NULL, 'month', 799, 500, 60, 2000);

@@ -7,48 +7,57 @@ import {
 import { describe, it, expect } from "vitest";
 import worker from "../src";
 
-describe("Hello World user worker", () => {
-	describe("request for /message", () => {
-		it('/ responds with "Hello, World!" (unit style)', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>(
-				"http://example.com/message"
-			);
-			// Create an empty context to pass to `worker.fetch()`.
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
-			await waitOnExecutionContext(ctx);
-			expect(await response.text()).toMatchInlineSnapshot(`"Hello, World!"`);
-		});
+describe("BestMCP Billing worker smoke tests", () => {
+	it("/health returns ok (unit style)", async () => {
+		const request = new Request<unknown, IncomingRequestCfProperties>(
+			"http://example.com/health"
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
 
-		it('responds with "Hello, World!" (integration style)', async () => {
-			const request = new Request("http://example.com/message");
-			const response = await SELF.fetch(request);
-			expect(await response.text()).toMatchInlineSnapshot(`"Hello, World!"`);
-		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ status: "ok" });
 	});
 
-	describe("request for /random", () => {
-		it("/ responds with a random UUID (unit style)", async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>(
-				"http://example.com/random"
-			);
-			// Create an empty context to pass to `worker.fetch()`.
-			const ctx = createExecutionContext();
-			const response = await worker.fetch(request, env, ctx);
-			// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
-			await waitOnExecutionContext(ctx);
-			expect(await response.text()).toMatch(
-				/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/
-			);
-		});
+	it("/health returns ok (integration style)", async () => {
+		const response = await SELF.fetch("http://example.com/health");
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ status: "ok" });
+	});
 
-		it("responds with a random UUID (integration style)", async () => {
-			const request = new Request("http://example.com/random");
-			const response = await SELF.fetch(request);
-			expect(await response.text()).toMatch(
-				/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/
-			);
-		});
+	it("/billing/success renders a non-404 checkout return page", async () => {
+		const response = await SELF.fetch("http://example.com/billing/success?session_id=cs_test_placeholder");
+		const text = await response.text();
+
+		expect(response.status).toBe(200);
+		expect(text).toContain("Payment successful");
+		expect(text).toContain("Back to dashboard");
+	});
+
+	it("/billing/cancel renders a non-404 cancel page", async () => {
+		const response = await SELF.fetch("http://example.com/billing/cancel");
+		const text = await response.text();
+
+		expect(response.status).toBe(200);
+		expect(text).toContain("Payment cancelled");
+	});
+
+	it("/auth/error renders a non-404 auth error page", async () => {
+		const response = await SELF.fetch("http://example.com/auth/error?error=test_error");
+		const text = await response.text();
+
+		expect(response.status).toBe(200);
+		expect(text).toContain("Authentication error");
+		expect(text).toContain("test_error");
+	});
+
+	it("/dashboard serves the static dashboard page", async () => {
+		const response = await SELF.fetch("http://example.com/dashboard");
+		const text = await response.text();
+
+		expect(response.status).toBe(200);
+		expect(text).toContain("BestMCP Billing Dashboard");
+		expect(text).toContain("Plans");
 	});
 });

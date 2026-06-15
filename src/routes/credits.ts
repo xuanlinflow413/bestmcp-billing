@@ -9,9 +9,26 @@ import { errorResponse, jsonResponse } from '../lib/utils';
 const creditsRoutes = new Hono<AppContext>();
 
 /**
- * 认证中间件
+ * 认证中间件 - 支持 Session Cookie 或 Internal API Key
  */
 async function authMiddleware(c: any, next: any) {
+  // 优先检查 Internal API Key（服务间调用）
+  const authHeader = c.req.header('Authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    if (token === c.env.INTERNAL_API_KEY) {
+      // 服务间调用，从 X-User-ID 获取用户
+      const userId = c.req.header('X-User-ID');
+      if (userId) {
+        c.set('userId', userId);
+        c.set('userRole', 'service');
+        await next();
+        return;
+      }
+    }
+  }
+
+  // 回退到 Session Cookie 认证（浏览器用户）
   const token = getSessionToken(c.req.raw);
   if (!token) {
     return errorResponse('Unauthorized', 401);
@@ -36,6 +53,7 @@ creditsRoutes.use('*', authMiddleware);
  */
 creditsRoutes.get('/', async (c) => {
   const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
   const db = new DbClient(c.env.DB);
   const credits = await db.getCredits(userId);
 
@@ -56,6 +74,7 @@ creditsRoutes.get('/', async (c) => {
  */
 creditsRoutes.get('/transactions', async (c) => {
   const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
   const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
   const offset = parseInt(c.req.query('offset') || '0');
 
@@ -78,6 +97,7 @@ const consumeSchema = z.object({
 
 creditsRoutes.post('/consume', zValidator('json', consumeSchema), async (c) => {
   const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
   const body = c.req.valid('json');
 
   const db = new DbClient(c.env.DB);
@@ -126,6 +146,7 @@ creditsRoutes.post('/consume', zValidator('json', consumeSchema), async (c) => {
  * 仅 admin 可操作
  */
 const refundSchema = z.object({
+  user_id: z.string(),
   reference_id: z.string(),
   amount: z.number().int().positive(),
   reason: z.string(),
@@ -133,16 +154,28 @@ const refundSchema = z.object({
 
 creditsRoutes.post('/refund', zValidator('json', refundSchema), async (c) => {
   const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
   const role = c.get('userRole');
 
-  if (role !== 'admin') {
+  // 允许 service 角色（kindreply-api）或 admin 角色
+  if (role !== 'service' && role !== 'admin') {
     return errorResponse('Forbidden', 403);
   }
 
   const body = c.req.valid('json');
   const db = new DbClient(c.env.DB);
 
-  const credits = await db.refundCredits(userId, body.amount, body.reason, body.reference_id);
+  const credits = await db.refundCredits(body.user_id, body.amount, body.reason, body.reference_id);
+
+  if (!credits) {
+    const latestCredits = await db.getCredits(body.user_id);
+    return jsonResponse({
+      success: true,
+      alreadyProcessed: true,
+      balance: latestCredits?.balance || 0,
+      reference_id: body.reference_id,
+    });
+  }
 
   return jsonResponse({
     success: true,

@@ -10,12 +10,33 @@ interface WebhookMessage {
   timestamp: number;
 }
 
+const STRIPE_API_VERSION = '2026-05-27.dahlia';
+
+function getPrimaryItem(subscription: Stripe.Subscription): any {
+  const item = subscription.items.data[0] as any;
+  if (!item) throw new Error(`Subscription ${subscription.id} has no items`);
+  return item;
+}
+
+function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const anyInvoice = invoice as any;
+  const sub = anyInvoice.subscription || anyInvoice.parent?.subscription_details?.subscription;
+  if (!sub) return null;
+  return typeof sub === 'string' ? sub : sub.id;
+}
+
+function getProductSlug(productId: string | null | undefined): 'bestmcp' | 'kindreply' | null {
+  if (productId === 'prod_bestmcp') return 'bestmcp';
+  if (productId === 'prod_kindreply') return 'kindreply';
+  return null;
+}
+
 /**
  * Queue Consumer: 处理 Stripe Webhook 事件
  */
 export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, env: Env): Promise<void> {
   const db = new DbClient(env.DB);
-  const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-12-18.acacia' });
+  const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
   for (const message of batch.messages) {
     const { eventId, type, data } = message.body;
@@ -27,36 +48,70 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
           const userId = session.metadata?.user_id;
           if (!userId) break;
 
-          // 获取订阅详情
+          // 处理订阅支付：只创建/更新 subscription，不发放 credits
+          // credits 由 invoice.paid 处理，避免重复发放
           if (session.subscription) {
             const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
-            const plan = await db.getPlanByStripePriceId(subscription.items.data[0].price.id);
+            const item = getPrimaryItem(subscription);
+            const priceId = item.price?.id;
+            const plan = priceId ? await db.getPlanByStripePriceId(priceId) : null;
 
             if (plan) {
-              await db.createSubscription({
-                id: crypto.randomUUID(),
-                user_id: userId,
-                stripe_customer_id: session.customer as string,
-                stripe_subscription_id: subscription.id,
-                stripe_price_id: subscription.items.data[0].price.id,
-                plan_id: plan.id,
-                status: subscription.status as any,
-                current_period_start: subscription.current_period_start,
-                current_period_end: subscription.current_period_end,
-                cancel_at_period_end: subscription.cancel_at_period_end ? 1 : 0,
-                credits_allocated: plan.credits_allocated,
-                credits_used: 0,
-              });
-
-              // 发放 Credits
-              await db.addCredits(
-                userId,
-                plan.credits_allocated,
-                'subscription_grant',
-                `Subscription: ${plan.name}`,
-                subscription.id,
-                plan.product_id === 'prod_bestmcp' ? 'bestmcp' : 'kindreply'
-              );
+              const existing = await db.getSubscriptionByStripeId(subscription.id);
+              if (existing) {
+                await db.updateSubscription({
+                  stripe_subscription_id: subscription.id,
+                  plan_id: plan.id,
+                  status: subscription.status as any,
+                  current_period_start: item.current_period_start ?? null,
+                  current_period_end: item.current_period_end ?? null,
+                  cancel_at_period_end: subscription.cancel_at_period_end ? 1 : 0,
+                });
+              } else {
+                await db.createSubscription({
+                  id: crypto.randomUUID(),
+                  user_id: userId,
+                  stripe_customer_id: session.customer as string,
+                  stripe_subscription_id: subscription.id,
+                  stripe_price_id: priceId,
+                  plan_id: plan.id,
+                  status: subscription.status as any,
+                  current_period_start: item.current_period_start ?? null,
+                  current_period_end: item.current_period_end ?? null,
+                  cancel_at_period_end: subscription.cancel_at_period_end ? 1 : 0,
+                  credits_allocated: plan.credits_per_period,
+                  credits_used: 0,
+                });
+              }
+              // 注意：订阅的 credits 发放由 invoice.paid 处理，不在此处发放
+              console.log(`Subscription ${subscription.id} created/updated for user ${userId}, credits will be granted on invoice.paid`);
+            }
+          } 
+          // 处理一次性支付（如 Job Pack, Builder Pack）
+          else if (session.mode === 'payment') {
+            const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
+            const item = lineItems.data[0];
+            if (item && item.price) {
+              const priceId = item.price.id;
+              const plan = await db.getPlanByStripePriceId(priceId);
+              
+              if (plan) {
+                // 添加 credits（幂等：reference_id = session.id）
+                const result = await db.addCredits(
+                  userId,
+                  plan.credits_per_period,
+                  'purchase',
+                  `One-time purchase: ${plan.name}`,
+                  session.id,  // 使用 session.id 作为幂等键
+                  getProductSlug(plan.product_id) || undefined
+                );
+                
+                if (result) {
+                  console.log(`Added ${plan.credits_per_period} credits to user ${userId} for ${plan.name}`);
+                } else {
+                  console.log(`Skipped duplicate credit grant for session ${session.id}`);
+                }
+              }
             }
           }
           break;
@@ -64,27 +119,37 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
 
         case 'invoice.paid': {
           const invoice = data as Stripe.Invoice;
-          if (invoice.subscription) {
-            const subscription = await stripe.subscriptions.retrieve(invoice.subscription as string);
+          const subscriptionId = getInvoiceSubscriptionId(invoice);
+          if (subscriptionId) {
+            const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+            const item = getPrimaryItem(subscription);
+            const priceId = item.price?.id;
+            const plan = priceId ? await db.getPlanByStripePriceId(priceId) : null;
+
             await db.updateSubscription({
               stripe_subscription_id: subscription.id,
+              plan_id: plan?.id || undefined,
               status: subscription.status as any,
-              current_period_start: subscription.current_period_start,
-              current_period_end: subscription.current_period_end,
+              current_period_start: item.current_period_start ?? null,
+              current_period_end: item.current_period_end ?? null,
+              cancel_at_period_end: subscription.cancel_at_period_end ? 1 : 0,
             });
 
-            // 续期重置 Credits
             const sub = await db.getSubscriptionByStripeId(subscription.id);
-            if (sub) {
-              const plan = await db.getPlanById(sub.plan_id!);
-              if (plan) {
-                await db.addCredits(
-                  sub.user_id,
-                  plan.credits_allocated,
-                  'subscription_grant',
-                  `Subscription renewal: ${plan.name}`,
-                  subscription.id
-                );
+            if (sub && plan) {
+              // 幂等：使用 invoice.id 作为 reference_id
+              const result = await db.addCredits(
+                sub.user_id,
+                plan.credits_per_period,
+                'subscription_grant',
+                `Subscription payment: ${plan.name}`,
+                invoice.id,
+                getProductSlug(plan.product_id) || undefined
+              );
+              if (result) {
+                console.log(`Granted ${plan.credits_per_period} credits for invoice ${invoice.id}`);
+              } else {
+                console.log(`Skipped duplicate credit grant for invoice ${invoice.id}`);
               }
             }
           }
@@ -93,20 +158,24 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
 
         case 'invoice.payment_failed': {
           const invoice = data as Stripe.Invoice;
-          if (invoice.subscription) {
-            await db.updateSubscriptionStatus(invoice.subscription as string, 'past_due');
+          const subscriptionId = getInvoiceSubscriptionId(invoice);
+          if (subscriptionId) {
+            await db.updateSubscriptionStatus(subscriptionId, 'past_due');
           }
           break;
         }
 
         case 'customer.subscription.updated': {
           const subscription = data as Stripe.Subscription;
+          const item = getPrimaryItem(subscription);
+          const priceId = item.price?.id;
+          const plan = priceId ? await db.getPlanByStripePriceId(priceId) : null;
           await db.updateSubscription({
             stripe_subscription_id: subscription.id,
             status: subscription.status as any,
-            plan_id: (await db.getPlanByStripePriceId(subscription.items.data[0].price.id))?.id || undefined,
-            current_period_start: subscription.current_period_start,
-            current_period_end: subscription.current_period_end,
+            plan_id: plan?.id || undefined,
+            current_period_start: item.current_period_start ?? null,
+            current_period_end: item.current_period_end ?? null,
             cancel_at_period_end: subscription.cancel_at_period_end ? 1 : 0,
           });
           break;
@@ -122,7 +191,6 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
           console.log(`Unhandled webhook event type: ${type}`);
       }
 
-      // 标记为已处理
       const webhookEvent = await db.getWebhookEvent(eventId);
       if (webhookEvent) {
         await db.markWebhookProcessed(webhookEvent.id, 'processed');

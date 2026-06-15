@@ -6,6 +6,9 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && wrangler deploy --dry-run",
+    "deploy:closure": "node scripts/deploy-billing-closure.mjs",
     "test": "vitest",
     "cf-typegen": "wrangler types"
   },

@@ -74,9 +74,9 @@ export interface Plan {
 	slug: string;
 	name: string;
 	stripe_price_id: string | null;
-	billing_interval: 'month' | 'year' | 'one_time' | null;
+	interval: 'month' | 'year' | 'lifetime' | null;
 	price_cents: number;
-	credits_allocated: number;
+	credits_per_period: number;
 	rate_limit_rpm: number;
 	rate_limit_rpd: number;
 	is_active: number;
@@ -185,7 +185,21 @@ export class DbClient {
 		return { success: true, balance: newBalance };
 	}
 
-	async addCredits(userId: string, amount: number, type: CreditTransaction['type'], description: string, referenceId?: string, product?: string): Promise<Credits> {
+	async addCredits(userId: string, amount: number, type: CreditTransaction['type'], description: string, referenceId?: string, product?: string): Promise<Credits | null> {
+		// 幂等性检查：如果 reference_id 已存在，跳过
+		if (referenceId) {
+			const existingTx = await this.getCreditTransactionByReference(referenceId);
+			if (existingTx) {
+				console.log(`[addCredits] Skipped duplicate: reference_id=${referenceId} already exists (tx_id=${existingTx.id})`);
+				return null;
+			}
+		}
+
+		let existingCredits = await this.getCredits(userId);
+		if (!existingCredits) {
+			existingCredits = await this.createCredits(userId);
+		}
+
 		// 增加余额
 		await this.db
 			.prepare(`
@@ -218,7 +232,7 @@ export class DbClient {
 		return credits!;
 	}
 
-	async refundCredits(userId: string, amount: number, description: string, referenceId: string): Promise<Credits> {
+	async refundCredits(userId: string, amount: number, description: string, referenceId: string): Promise<Credits | null> {
 		return this.addCredits(userId, amount, 'refund', description, referenceId);
 	}
 
@@ -241,6 +255,14 @@ export class DbClient {
 		return result.results || [];
 	}
 
+	async getCreditTransactionByReference(referenceId: string): Promise<CreditTransaction | null> {
+		const result = await this.db
+			.prepare('SELECT * FROM credit_transactions WHERE reference_id = ? LIMIT 1')
+			.bind(referenceId)
+			.first<CreditTransaction>();
+		return result || null;
+	}
+
 	// ===== Subscriptions =====
 	async getSubscription(userId: string): Promise<Subscription | null> {
 		const result = await this.db
@@ -253,14 +275,14 @@ export class DbClient {
 	async createSubscription(sub: Omit<Subscription, 'created_at' | 'updated_at'>): Promise<void> {
 		await this.db
 			.prepare(
-				`INSERT INTO subscriptions (id, user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan_id, status,
-				 current_period_start, current_period_end, cancel_at_period_end, credits_allocated, credits_used, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`
+				`INSERT INTO subscriptions (id, user_id, stripe_customer_id, stripe_subscription_id, plan_id, status,
+				 current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())`
 			)
 			.bind(
-				sub.id, sub.user_id, sub.stripe_customer_id, sub.stripe_subscription_id, sub.stripe_price_id,
+				sub.id, sub.user_id, sub.stripe_customer_id, sub.stripe_subscription_id,
 				sub.plan_id, sub.status, sub.current_period_start, sub.current_period_end,
-				sub.cancel_at_period_end, sub.credits_allocated, sub.credits_used
+				sub.cancel_at_period_end
 			)
 			.run();
 	}
@@ -281,7 +303,6 @@ export class DbClient {
 		if (sub.current_period_start !== undefined) { fields.push('current_period_start = ?'); values.push(sub.current_period_start); }
 		if (sub.current_period_end !== undefined) { fields.push('current_period_end = ?'); values.push(sub.current_period_end); }
 		if (sub.cancel_at_period_end !== undefined) { fields.push('cancel_at_period_end = ?'); values.push(sub.cancel_at_period_end); }
-		if (sub.credits_allocated !== undefined) { fields.push('credits_allocated = ?'); values.push(sub.credits_allocated); }
 
 		fields.push('updated_at = unixepoch()');
 		values.push(sub.stripe_subscription_id);
@@ -315,11 +336,11 @@ export class DbClient {
 	}
 
 	// ===== Webhook Events =====
-	async getWebhookEvent(stripeEventId: string): Promise<{ id: string } | null> {
+	async getWebhookEvent(stripeEventId: string): Promise<{ id: string; status: string; payload: string; processing_error: string | null } | null> {
 		const result = await this.db
-			.prepare('SELECT id FROM webhook_events WHERE stripe_event_id = ?')
+			.prepare('SELECT id, status, payload, processing_error FROM webhook_events WHERE stripe_event_id = ?')
 			.bind(stripeEventId)
-			.first<{ id: string }>();
+			.first<{ id: string; status: string; payload: string; processing_error: string | null }>();
 		return result || null;
 	}
 

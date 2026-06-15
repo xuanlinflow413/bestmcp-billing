@@ -15,12 +15,13 @@ export interface Env {
   // Queues
   QUEUE_WEBHOOK: Queue;
   QUEUE_AUDIT: Queue;
-  QUEUE_EMAIL: Queue;
   QUEUE_CREDITS: Queue;
 
   // 环境变量
   APP_ENV: string;
   APP_URL: string;
+  FRONTEND_URL: string;
+  API_URL: string;
   GOOGLE_OAUTH_REDIRECT_URI: string;
 
   // Secrets (通过 wrangler secret 设置)
@@ -29,6 +30,13 @@ export interface Env {
   JWT_SECRET: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
+  INTERNAL_API_KEY: string; // 服务间调用认证
+  ADMIN_SECRET: string; // Admin replay endpoint
+
+  // PayPal
+  PAYPAL_CLIENT_ID: string;
+  PAYPAL_CLIENT_SECRET: string;
+  PAYPAL_LIVE: string;
 }
 
 // Hono Context 类型

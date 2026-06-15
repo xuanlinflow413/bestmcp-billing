@@ -21,14 +21,13 @@ export function errorResponse(message: string, status = 400, code?: string): Res
 	return jsonResponse({ error: message, code }, status);
 }
 
-export function sha256(text: string): string {
+export async function sha256(text: string): Promise<string> {
 	const encoder = new TextEncoder();
 	const data = encoder.encode(text);
-	return crypto.subtle.digest('SHA-256', data).then((buf) => {
-		return Array.from(new Uint8Array(buf))
-			.map((b) => b.toString(16).padStart(2, '0'))
-			.join('');
-	});
+	const buf = await crypto.subtle.digest('SHA-256', data);
+	return Array.from(new Uint8Array(buf))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('');
 }
 
 export function generateApiKey(): { key: string; hash: string; prefix: string } {

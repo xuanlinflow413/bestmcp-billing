@@ -1,6 +1,4 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
-import { z } from 'zod';
 import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { createSession, destroySession, getSessionToken, verifySession } from '../lib/auth';
@@ -9,16 +7,82 @@ import { errorResponse, generateUUID, jsonResponse, now, setCookie, clearCookie 
 const authRoutes = new Hono<AppContext>();
 
 /**
+ * 允许的登录回跳域名白名单
+ * - 固定域名：kindreply.co, www.kindreply.co, bestmcpservers.com, www.bestmcpservers.com
+ * - 通配子域：*.kindreply.pages.dev, *.mcp-server-directory.pages.dev
+ */
+const ALLOWED_RETURN_HOSTS = [
+  'kindreply.co',
+  'www.kindreply.co',
+  'bestmcpservers.com',
+  'www.bestmcpservers.com',
+];
+
+const ALLOWED_RETURN_HOST_SUFFIXES = [
+  '.kindreply.pages.dev',
+  '.mcp-server-directory.pages.dev',
+];
+
+/**
+ * 验证并获取安全的回跳 URL
+ * 安全要求：
+ * - protocol 必须是 https:
+ * - hostname 必须等于固定白名单域名，或以 .kindreply.pages.dev 结尾
+ * - 不允许 http
+ * - 不允许形如 evilkindreply.pages.dev.attacker.com 的攻击
+ * - 不允许 query 里伪造域名通过
+ */
+function getSafeReturnUrl(returnUrl: string | null, fallback: string): string {
+  if (!returnUrl) return fallback;
+  try {
+    const url = new URL(returnUrl);
+
+    // 必须是 https 协议
+    if (url.protocol !== 'https:') {
+      console.log('getSafeReturnUrl: rejected - not https:', url.protocol);
+      return fallback;
+    }
+
+    const host = url.host; // 包含端口（如果有）
+
+    // 检查固定白名单
+    if (ALLOWED_RETURN_HOSTS.includes(host)) {
+      return returnUrl;
+    }
+
+    // 检查后缀白名单（防止 attacker.com 攻击）
+    for (const suffix of ALLOWED_RETURN_HOST_SUFFIXES) {
+      if (host.endsWith(suffix)) {
+        // 额外检查：确保不是 attacker.com 伪造
+        // host 必须以 suffix 结尾，且 suffix 前必须是一个合法的子域（含点或开头）
+        const prefix = host.slice(0, -suffix.length);
+        if (prefix.length > 0 && !prefix.includes('.')) {
+          return returnUrl;
+        }
+      }
+    }
+
+    console.log('getSafeReturnUrl: rejected - host not allowed:', host);
+  } catch (e) {
+    console.log('getSafeReturnUrl: rejected - invalid URL:', returnUrl);
+  }
+  return fallback;
+}
+
+/**
  * GET /api/auth/google
  * 发起 Google OAuth 登录
  */
 authRoutes.get('/google', async (c) => {
   const env = c.env;
+  const url = new URL(c.req.url);
+  const returnUrl = url.searchParams.get('returnUrl') || '';
   const state = crypto.randomUUID();
   const nonce = crypto.randomUUID();
 
-  // 存储 state 到 KV（10分钟过期）
-  await env.KV_SESSIONS.put(`oauth:state:${state}`, nonce, { expirationTtl: 600 });
+  // 存储 state + returnUrl 到 KV（10分钟过期）
+  const stateData = JSON.stringify({ nonce, returnUrl });
+  await env.KV_SESSIONS.put(`oauth:state:${state}`, stateData, { expirationTtl: 600 });
 
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
@@ -54,11 +118,51 @@ authRoutes.get('/google/callback', async (c) => {
   }
 
   // 验证 state
-  const storedNonce = await env.KV_SESSIONS.get(`oauth:state:${state}`);
-  if (!storedNonce) {
+  const storedStateData = await env.KV_SESSIONS.get(`oauth:state:${state}`);
+  if (!storedStateData) {
     return c.redirect(`${env.APP_URL}/auth/error?error=invalid_state`);
   }
   await env.KV_SESSIONS.delete(`oauth:state:${state}`);
+
+  let returnUrl = '';
+  let state_return_url_host = '';
+  let state_return_url_path = '';
+  let fallback_used = false;
+  
+  try {
+    const parsed = JSON.parse(storedStateData);
+    returnUrl = parsed.returnUrl || '';
+    if (returnUrl) {
+      try {
+        const ru = new URL(returnUrl);
+        state_return_url_host = ru.host;
+        state_return_url_path = ru.pathname;
+      } catch {
+        state_return_url_host = 'invalid';
+      }
+    }
+  } catch {
+    returnUrl = '';
+  }
+
+  // 计算 safe return URL
+  const safeReturnUrl = getSafeReturnUrl(returnUrl, `${env.APP_URL}/dashboard.html`);
+  let safe_return_url_host = '';
+  try {
+    safe_return_url_host = new URL(safeReturnUrl).host;
+  } catch {
+    safe_return_url_host = 'invalid';
+  }
+  fallback_used = safeReturnUrl === `${env.APP_URL}/dashboard.html`;
+
+  console.log(JSON.stringify({
+    event: 'oauth_callback_return_url_debug',
+    state_return_url_host,
+    state_return_url_path,
+    safe_return_url_host,
+    fallback_used,
+    returnUrl_length: returnUrl.length,
+  }));
 
   // 用 code 换 token
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -76,7 +180,13 @@ authRoutes.get('/google/callback', async (c) => {
   if (!tokenRes.ok) {
     const err = await tokenRes.text();
     console.error('Google token exchange failed:', err);
-    return c.redirect(`${env.APP_URL}/auth/error?error=token_exchange`);
+    console.error('Request details:', {
+      client_id: env.GOOGLE_CLIENT_ID,
+      redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
+      grant_type: 'authorization_code',
+      code_length: code.length,
+    });
+    return c.redirect(`${env.APP_URL}/auth/error?error=token_exchange&details=${encodeURIComponent(err.slice(0, 200))}`);
   }
 
   const tokenData = await tokenRes.json() as {
@@ -133,26 +243,121 @@ authRoutes.get('/google/callback', async (c) => {
 
     // 初始化 Credits
     await db.createCredits(userId);
-  } else {
-    // 更新 OAuth token
-    const account = await db.getAccountByProvider('google', googleUser.id);
-    if (account) {
-      // 这里可以更新 token，暂时省略
-    }
   }
 
   // 创建会话
   const sessionToken = await createSession(user, env.KV_SESSIONS, env.JWT_SECRET);
 
-  // 设置 cookie 并重定向
+  // 设置 cookie 并重定向到原页面或 dashboard
+  const redirectUrl = safeReturnUrl;
+  console.log(JSON.stringify({
+    event: 'oauth_callback_final_redirect',
+    redirectUrl,
+    fallback_used,
+  }));
+
+  // 生成一次性 handoff token（用于跨域登录态同步）
+  const handoffToken = 'handoff_' + crypto.randomUUID();
+  const handoffData = JSON.stringify({
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+    avatar_url: user.avatar_url,
+    role: user.role,
+    returnHost: new URL(redirectUrl).host,
+  });
+  await env.KV_SESSIONS.put(`handoff:${handoffToken}`, handoffData, { expirationTtl: 60 });
+
+  // 在 redirect URL 上附加 auth_token
+  const redirectWithToken = new URL(redirectUrl);
+  redirectWithToken.searchParams.set('auth_token', handoffToken);
+  console.log(JSON.stringify({
+    event: 'oauth_callback_handoff_created',
+    returnHost: redirectWithToken.host,
+  }));
+
   c.header('Set-Cookie', setCookie('session', sessionToken, 7 * 24 * 60 * 60));
-  return c.redirect(`${env.APP_URL}/dashboard`);
+  return c.redirect(redirectWithToken.toString());
 });
 
 /**
- * POST /api/auth/logout
- * 登出
+ * POST /api/auth/exchange
+ * 一次性 handoff token 交换为 session
+ * 用于跨域登录态同步（KindReply 前端）
  */
+authRoutes.post('/exchange', async (c) => {
+  const env = c.env;
+  let body: { token?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return errorResponse('Invalid JSON body', 400);
+  }
+
+  const { token } = body;
+
+  // 验证 token 格式
+  if (!token || typeof token !== 'string' || !token.startsWith('handoff_')) {
+    return errorResponse('Invalid token format', 400);
+  }
+
+  // 查 KV（一次性使用，读取后立即删除）
+  const kvKey = `handoff:${token}`;
+  const handoffDataRaw = await env.KV_SESSIONS.get(kvKey);
+  if (!handoffDataRaw) {
+    return errorResponse('Token expired or invalid', 401);
+  }
+
+  // 立即删除，确保一次性使用
+  await env.KV_SESSIONS.delete(kvKey);
+
+  let handoffData: {
+    userId: string;
+    email: string;
+    name: string;
+    avatar_url?: string;
+    role: string;
+    returnHost: string;
+  };
+  try {
+    handoffData = JSON.parse(handoffDataRaw);
+  } catch {
+    return errorResponse('Invalid token data', 400);
+  }
+
+  // 验证 returnHost 在白名单中
+  const allowed = ALLOWED_RETURN_HOSTS.includes(handoffData.returnHost) ||
+    ALLOWED_RETURN_HOST_SUFFIXES.some(suffix => {
+      if (!handoffData.returnHost.endsWith(suffix)) return false;
+      const prefix = handoffData.returnHost.slice(0, -suffix.length);
+      return prefix.length > 0 && !prefix.includes('.');
+    });
+  if (!allowed) {
+    return errorResponse('Invalid return host', 403);
+  }
+
+  // 验证用户仍然存在
+  const db = new DbClient(env.DB);
+  const user = await db.getUserById(handoffData.userId);
+  if (!user) {
+    return errorResponse('User not found', 404);
+  }
+
+  // 创建正式 session token
+  const sessionToken = await createSession(user, env.KV_SESSIONS, env.JWT_SECRET);
+
+  // 返回用户信息和 session token（前端存储到 localStorage）
+  return jsonResponse({
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatar_url: user.avatar_url,
+      role: user.role,
+    },
+    token: sessionToken,
+  });
+});
 authRoutes.post('/logout', async (c) => {
   const token = getSessionToken(c.req.raw);
   if (token) {
@@ -169,13 +374,13 @@ authRoutes.post('/logout', async (c) => {
 authRoutes.get('/session', async (c) => {
   const token = getSessionToken(c.req.raw);
   if (!token) {
-    return errorResponse('Unauthorized', 401);
+    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null });
   }
 
   const payload = await verifySession(token, c.env.KV_SESSIONS, c.env.JWT_SECRET);
   if (!payload) {
     c.header('Set-Cookie', clearCookie('session'));
-    return errorResponse('Session expired', 401);
+    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null });
   }
 
   const db = new DbClient(c.env.DB);
@@ -184,6 +389,7 @@ authRoutes.get('/session', async (c) => {
   const subscription = await db.getSubscription(payload.userId);
 
   return jsonResponse({
+    authenticated: true,
     user: user ? {
       id: user.id,
       email: user.email,
