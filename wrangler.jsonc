@@ -78,8 +78,8 @@
 	},
 	"vars": {
 		"APP_ENV": "production",
-		"APP_URL": "https://bestmcpservers.com",
-		"FRONTEND_URL": "https://bestmcpservers.com",
+		"APP_URL": "https://cleartextdetector.com",
+		"FRONTEND_URL": "https://cleartextdetector.com",
 		"API_URL": "https://auth.bestmcpservers.com",
 		"GOOGLE_OAUTH_REDIRECT_URI": "https://auth.bestmcpservers.com/api/auth/google/callback"
 	}

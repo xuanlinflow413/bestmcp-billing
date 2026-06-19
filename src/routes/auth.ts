@@ -8,7 +8,7 @@ const authRoutes = new Hono<AppContext>();
 
 /**
  * 允许的登录回跳域名白名单
- * - 固定域名：kindreply.co, www.kindreply.co, bestmcpservers.com, www.bestmcpservers.com
+ * - 固定域名：kindreply.co, www.kindreply.co, bestmcpservers.com, www.bestmcpservers.com, cleartextdetector.com, www.cleartextdetector.com
  * - 通配子域：*.kindreply.pages.dev, *.mcp-server-directory.pages.dev
  */
 const ALLOWED_RETURN_HOSTS = [
@@ -16,6 +16,8 @@ const ALLOWED_RETURN_HOSTS = [
   'www.kindreply.co',
   'bestmcpservers.com',
   'www.bestmcpservers.com',
+  'cleartextdetector.com',
+  'www.cleartextdetector.com',
 ];
 
 const ALLOWED_RETURN_HOST_SUFFIXES = [
@@ -69,6 +71,14 @@ function getSafeReturnUrl(returnUrl: string | null, fallback: string): string {
   return fallback;
 }
 
+function getOAuthRedirectUri(requestUrl: string, env: AppContext['Bindings']): string {
+  const host = new URL(requestUrl).host;
+  if (host === 'auth.cleartextdetector.com') {
+    return 'https://auth.cleartextdetector.com/api/auth/google/callback';
+  }
+  return env.GOOGLE_OAUTH_REDIRECT_URI;
+}
+
 /**
  * GET /api/auth/google
  * 发起 Google OAuth 登录
@@ -84,9 +94,10 @@ authRoutes.get('/google', async (c) => {
   const stateData = JSON.stringify({ nonce, returnUrl });
   await env.KV_SESSIONS.put(`oauth:state:${state}`, stateData, { expirationTtl: 600 });
 
+  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env);
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
-    redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
+    redirect_uri: oauthRedirectUri,
     response_type: 'code',
     scope: 'openid email profile',
     state,
@@ -146,14 +157,15 @@ authRoutes.get('/google/callback', async (c) => {
   }
 
   // 计算 safe return URL
-  const safeReturnUrl = getSafeReturnUrl(returnUrl, `${env.APP_URL}/dashboard.html`);
+  const fallbackReturnUrl = `${env.APP_URL}/pro`;
+  const safeReturnUrl = getSafeReturnUrl(returnUrl, fallbackReturnUrl);
   let safe_return_url_host = '';
   try {
     safe_return_url_host = new URL(safeReturnUrl).host;
   } catch {
     safe_return_url_host = 'invalid';
   }
-  fallback_used = safeReturnUrl === `${env.APP_URL}/dashboard.html`;
+  fallback_used = safeReturnUrl === fallbackReturnUrl;
 
   console.log(JSON.stringify({
     event: 'oauth_callback_return_url_debug',
@@ -165,6 +177,7 @@ authRoutes.get('/google/callback', async (c) => {
   }));
 
   // 用 code 换 token
+  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env);
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -172,7 +185,7 @@ authRoutes.get('/google/callback', async (c) => {
       code,
       client_id: env.GOOGLE_CLIENT_ID,
       client_secret: env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
+      redirect_uri: oauthRedirectUri,
       grant_type: 'authorization_code',
     }),
   });
@@ -181,8 +194,8 @@ authRoutes.get('/google/callback', async (c) => {
     const err = await tokenRes.text();
     console.error('Google token exchange failed:', err);
     console.error('Request details:', {
-      client_id: env.GOOGLE_CLIENT_ID,
-      redirect_uri: env.GOOGLE_OAUTH_REDIRECT_URI,
+      client_id_present: Boolean(env.GOOGLE_CLIENT_ID),
+      redirect_uri: oauthRedirectUri,
       grant_type: 'authorization_code',
       code_length: code.length,
     });

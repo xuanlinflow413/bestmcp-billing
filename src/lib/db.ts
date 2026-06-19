@@ -46,7 +46,7 @@ export interface CreditTransaction {
 	balance_after: number;
 	description: string | null;
 	reference_id: string | null;
-	product: 'bestmcp' | 'kindreply' | null;
+	product: 'bestmcp' | 'kindreply' | 'cleartext' | null;
 	metadata: string | null;
 	created_at: number;
 }
@@ -316,7 +316,23 @@ export class DbClient {
 	// ===== Plans =====
 	async getPlanByStripePriceId(stripePriceId: string): Promise<Plan | null> {
 		const result = await this.db
-			.prepare('SELECT * FROM plans WHERE stripe_price_id = ?')
+			.prepare(`
+				SELECT
+					id,
+					product_id,
+					slug,
+					name,
+					stripe_price_id,
+					interval,
+					price_cents,
+					credits_per_period,
+					60 AS rate_limit_rpm,
+					2000 AS rate_limit_rpd,
+					is_active,
+					created_at
+				FROM plans
+				WHERE stripe_price_id = ?
+			`)
 			.bind(stripePriceId)
 			.first<Plan>();
 		return result || null;
@@ -331,7 +347,23 @@ export class DbClient {
 	}
 
 	async getPlanById(id: string): Promise<Plan | null> {
-	  const result = await this.db.prepare('SELECT * FROM plans WHERE id = ?').bind(id).first<Plan>();
+	  const result = await this.db.prepare(`
+		SELECT
+			id,
+			product_id,
+			slug,
+			name,
+			stripe_price_id,
+			interval,
+			price_cents,
+			credits_per_period,
+			60 AS rate_limit_rpm,
+			2000 AS rate_limit_rpd,
+			is_active,
+			created_at
+		FROM plans
+		WHERE id = ?
+	  `).bind(id).first<Plan>();
 	  return result || null;
 	}
 

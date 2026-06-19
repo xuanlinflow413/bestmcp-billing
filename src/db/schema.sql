@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     balance_after INTEGER NOT NULL,
     description TEXT,
     reference_id TEXT,                            -- 关联 invoice/usage_log
-    product TEXT CHECK (product IN ('bestmcp', 'kindreply')),
+    product TEXT CHECK (product IN ('bestmcp', 'kindreply', 'cleartext')),
     metadata TEXT,                                -- JSON 字符串
     created_at INTEGER DEFAULT (unixepoch()),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     api_key_id TEXT,
-    product TEXT NOT NULL CHECK (product IN ('bestmcp', 'kindreply')),
+    product TEXT NOT NULL CHECK (product IN ('bestmcp', 'kindreply', 'cleartext')),
     feature TEXT NOT NULL,                        -- 'mcp_eval', 'search', 'reply_short', 'reply_long'
     credits_consumed INTEGER NOT NULL,
     input_tokens INTEGER,
@@ -226,11 +226,14 @@ CREATE INDEX IF NOT EXISTS idx_invoices_stripe ON invoices(stripe_invoice_id);
 -- 插入产品
 INSERT OR IGNORE INTO products (id, slug, name, description) VALUES
 ('prod_bestmcp', 'bestmcp', 'BestMCPServers', 'MCP server directory and evaluation platform'),
-('prod_kindreply', 'kindreply', 'KindReply', 'AI-powered reply assistant');
+('prod_kindreply', 'kindreply', 'KindReply', 'AI-powered reply assistant'),
+('prod_cleartext', 'cleartext', 'ClearText Detector', 'AI text detection and humanization workspace');
 
 -- 插入 MVP 套餐。真实 Stripe price_id 通过部署后 D1 映射写入，不在源码里放占位 price_ 值。
 INSERT OR IGNORE INTO plans (id, product_id, slug, name, stripe_price_id, billing_interval, price_cents, credits_allocated, rate_limit_rpm, rate_limit_rpd) VALUES
 ('plan_bestmcp_free', 'prod_bestmcp', 'bestmcp-free', 'Free', NULL, NULL, 0, 100, 30, 500),
 ('plan_bestmcp_pro', 'prod_bestmcp', 'bestmcp-pro', 'Pro', NULL, 'month', 999, 1000, 60, 2000),
 ('plan_kindreply_free', 'prod_kindreply', 'kindreply-free', 'Free', NULL, NULL, 0, 50, 30, 500),
-('plan_kindreply_pro', 'prod_kindreply', 'kindreply-pro', 'Pro', NULL, 'month', 799, 500, 60, 2000);
+('plan_kindreply_pro', 'prod_kindreply', 'kindreply-pro', 'Pro', NULL, 'month', 799, 500, 60, 2000),
+('plan_cleartext_free', 'prod_cleartext', 'cleartext-free', 'Free', NULL, NULL, 0, 20, 30, 300),
+('plan_cleartext_pro', 'prod_cleartext', 'cleartext-pro', 'Pro', NULL, 'month', 999, 500, 60, 2000);

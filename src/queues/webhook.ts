@@ -25,9 +25,10 @@ function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return typeof sub === 'string' ? sub : sub.id;
 }
 
-function getProductSlug(productId: string | null | undefined): 'bestmcp' | 'kindreply' | null {
+function getProductSlug(productId: string | null | undefined): 'bestmcp' | 'kindreply' | 'cleartext' | null {
   if (productId === 'prod_bestmcp') return 'bestmcp';
   if (productId === 'prod_kindreply') return 'kindreply';
+  if (productId === 'prod_cleartext') return 'cleartext';
   return null;
 }
 
@@ -54,7 +55,8 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
             const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
             const item = getPrimaryItem(subscription);
             const priceId = item.price?.id;
-            const plan = priceId ? await db.getPlanByStripePriceId(priceId) : null;
+            const planId = session.metadata?.plan_id || subscription.metadata?.plan_id;
+            const plan = (priceId ? await db.getPlanByStripePriceId(priceId) : null) || (planId ? await db.getPlanById(planId) : null);
 
             if (plan) {
               const existing = await db.getSubscriptionByStripeId(subscription.id);
@@ -124,7 +126,8 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
             const subscription = await stripe.subscriptions.retrieve(subscriptionId);
             const item = getPrimaryItem(subscription);
             const priceId = item.price?.id;
-            const plan = priceId ? await db.getPlanByStripePriceId(priceId) : null;
+            const planId = subscription.metadata?.plan_id;
+            const plan = (priceId ? await db.getPlanByStripePriceId(priceId) : null) || (planId ? await db.getPlanById(planId) : null);
 
             await db.updateSubscription({
               stripe_subscription_id: subscription.id,

@@ -90,7 +90,7 @@ creditsRoutes.get('/transactions', async (c) => {
  */
 const consumeSchema = z.object({
   amount: z.number().int().positive(),
-  product: z.enum(['bestmcp', 'kindreply']),
+  product: z.enum(['bestmcp', 'kindreply', 'cleartext']),
   feature: z.string(),
   description: z.string().optional(),
 });

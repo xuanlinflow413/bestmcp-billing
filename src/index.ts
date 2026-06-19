@@ -22,6 +22,8 @@ app.use('*', cors({
       'https://www.kindreply.co',
       'https://bestmcpservers.com',
       'https://www.bestmcpservers.com',
+      'https://cleartextdetector.com',
+      'https://www.cleartextdetector.com',
       'http://localhost:3000',
       'http://localhost:3001',
     ];
@@ -29,6 +31,7 @@ app.use('*', cors({
     if (allowed.includes(origin)) return origin;
     if (origin.endsWith('.kindreply.pages.dev')) return origin;
     if (origin.endsWith('.mcp-server-directory.pages.dev')) return origin;
+    if (origin.endsWith('.cleartextdetector.pages.dev')) return origin;
     return null;
   },
   credentials: true,

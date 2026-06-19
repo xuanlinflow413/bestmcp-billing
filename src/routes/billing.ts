@@ -74,9 +74,22 @@ billingRoutes.post('/checkout', async (c) => {
   if (!plan || !plan.is_active || plan.price_cents <= 0) {
     return errorResponse('Plan not found or unavailable', 404);
   }
-  if (!plan.stripe_price_id || !plan.stripe_price_id.startsWith('price_')) {
-    return errorResponse('Plan is not configured with a valid Stripe price', 409, 'PLAN_PRICE_NOT_CONFIGURED');
+
+  const isSubscription = plan.interval === 'month' || plan.interval === 'year';
+  if (isSubscription) {
+    const existingSubscription = await db.getSubscription(userId);
+    const existingPlanId = existingSubscription?.plan_id?.toLowerCase() || '';
+    const checkoutPlanId = plan.id.toLowerCase();
+    if (
+      existingSubscription
+      && ['active', 'trialing'].includes(existingSubscription.status)
+      && (existingPlanId === checkoutPlanId || (checkoutPlanId.includes('cleartext') && existingPlanId.includes('cleartext')))
+    ) {
+      return errorResponse('An active subscription already exists for this account', 409, 'SUBSCRIPTION_ALREADY_ACTIVE');
+    }
   }
+
+  const configuredPriceId = plan.stripe_price_id?.startsWith('price_') ? plan.stripe_price_id : null;
 
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
@@ -93,16 +106,30 @@ billingRoutes.post('/checkout', async (c) => {
   }
 
   // 根据套餐类型决定 Checkout mode
-  const isSubscription = plan.interval === 'month' || plan.interval === 'year';
   const mode = isSubscription ? 'subscription' : 'payment';
 
-  const sessionConfig: any = {
+  const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = configuredPriceId
+    ? { price: configuredPriceId, quantity: 1 }
+    : {
+        price_data: {
+          currency: 'usd',
+          unit_amount: plan.price_cents,
+          product_data: {
+            name: plan.name,
+            metadata: { product_id: plan.product_id, plan_id: plan.id },
+          },
+          recurring: isSubscription ? { interval: plan.interval as 'month' | 'year' } : undefined,
+        },
+        quantity: 1,
+      };
+
+  const sessionConfig: Stripe.Checkout.SessionCreateParams = {
     customer: customerId,
     mode,
     payment_method_types: ['card'],
-    line_items: [{ price: plan.stripe_price_id, quantity: 1 }],
-    success_url: body.success_url || `${c.env.FRONTEND_URL}/cover-letter-writer?checkout=success`,
-    cancel_url: body.cancel_url || `${c.env.FRONTEND_URL}/cover-letter-writer?checkout=cancelled`,
+    line_items: [lineItem],
+    success_url: body.success_url || `${c.env.FRONTEND_URL}/pro?checkout=success`,
+    cancel_url: body.cancel_url || `${c.env.FRONTEND_URL}/pro?checkout=cancelled`,
     metadata: { user_id: userId, plan_id: plan.id, product_id: plan.product_id },
   };
 
@@ -137,7 +164,7 @@ billingRoutes.post('/portal', async (c) => {
 
   const session = await stripe.billingPortal.sessions.create({
     customer: user.stripe_customer_id,
-    return_url: `${c.env.FRONTEND_URL}/dashboard`,
+    return_url: `${c.env.FRONTEND_URL}/pro`,
   });
 
   return jsonResponse({ url: session.url });
