@@ -4,6 +4,7 @@
 PRAGMA foreign_keys = OFF;
 
 -- Rebuild credit_transactions so its product CHECK allows ClearText while preserving rows.
+DROP TABLE IF EXISTS credit_transactions_new;
 CREATE TABLE IF NOT EXISTS credit_transactions_new (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -34,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_credit_tx_created ON credit_transactions(created_
 CREATE INDEX IF NOT EXISTS idx_credit_tx_reference ON credit_transactions(reference_id);
 
 -- Rebuild usage_logs so its product CHECK allows ClearText while preserving rows.
+DROP TABLE IF EXISTS usage_logs_new;
 CREATE TABLE IF NOT EXISTS usage_logs_new (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -72,8 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_feature ON usage_logs(feature);
 INSERT OR IGNORE INTO products (id, slug, name, description) VALUES
 ('prod_cleartext', 'cleartext', 'ClearText Detector', 'AI text detection and humanization workspace');
 
-INSERT OR IGNORE INTO plans (id, product_id, slug, name, description, stripe_price_id, interval, price_cents, credits_per_period) VALUES
-('plan_cleartext_free', 'prod_cleartext', 'cleartext-free', 'Free', 'Free ClearText detection credits for evaluation.', NULL, NULL, 0, 20),
-('plan_cleartext_pro', 'prod_cleartext', 'cleartext-pro', 'Pro', 'Monthly ClearText detection and humanization credits.', NULL, 'month', 999, 500);
+INSERT OR IGNORE INTO plans (id, product_id, slug, name, stripe_price_id, billing_interval, price_cents, credits_allocated, rate_limit_rpm, rate_limit_rpd) VALUES
+('plan_cleartext_free', 'prod_cleartext', 'cleartext-free', 'Free', NULL, NULL, 0, 20, 30, 300),
+('plan_cleartext_pro', 'prod_cleartext', 'cleartext-pro', 'Pro', NULL, 'month', 999, 500, 60, 2000);
 
 PRAGMA foreign_keys = ON;

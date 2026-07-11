@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { createSession, destroySession, getSessionToken, verifySession } from '../lib/auth';
+import { getProductConfigForRequest, getProductConfigForReturnUrl } from '../lib/product-config';
 import { errorResponse, generateUUID, jsonResponse, now, setCookie, clearCookie } from '../lib/utils';
 
 const authRoutes = new Hono<AppContext>();
@@ -9,7 +10,7 @@ const authRoutes = new Hono<AppContext>();
 /**
  * 允许的登录回跳域名白名单
  * - 固定域名：kindreply.co, www.kindreply.co, bestmcpservers.com, www.bestmcpservers.com, cleartextdetector.com, www.cleartextdetector.com
- * - 通配子域：*.kindreply.pages.dev, *.mcp-server-directory.pages.dev
+ * - 通配子域：*.kindreply.pages.dev, *.mcp-server-directory.pages.dev, *.cleartextdetector.pages.dev
  */
 const ALLOWED_RETURN_HOSTS = [
   'kindreply.co',
@@ -23,6 +24,7 @@ const ALLOWED_RETURN_HOSTS = [
 const ALLOWED_RETURN_HOST_SUFFIXES = [
   '.kindreply.pages.dev',
   '.mcp-server-directory.pages.dev',
+  '.cleartextdetector.pages.dev',
 ];
 
 /**
@@ -71,10 +73,10 @@ function getSafeReturnUrl(returnUrl: string | null, fallback: string): string {
   return fallback;
 }
 
-function getOAuthRedirectUri(requestUrl: string, env: AppContext['Bindings']): string {
-  const host = new URL(requestUrl).host;
-  if (host === 'auth.cleartextdetector.com') {
-    return 'https://auth.cleartextdetector.com/api/auth/google/callback';
+function getOAuthRedirectUri(requestUrl: string, env: AppContext['Bindings'], forwardedHost?: string | null): string {
+  const requestConfig = getProductConfigForRequest(requestUrl, forwardedHost);
+  if (requestConfig.oauthRedirectUri) {
+    return requestConfig.oauthRedirectUri;
   }
   return env.GOOGLE_OAUTH_REDIRECT_URI;
 }
@@ -94,7 +96,7 @@ authRoutes.get('/google', async (c) => {
   const stateData = JSON.stringify({ nonce, returnUrl });
   await env.KV_SESSIONS.put(`oauth:state:${state}`, stateData, { expirationTtl: 600 });
 
-  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env);
+  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env, c.req.header('X-Forwarded-Host'));
   const params = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     redirect_uri: oauthRedirectUri,
@@ -116,22 +118,23 @@ authRoutes.get('/google', async (c) => {
 authRoutes.get('/google/callback', async (c) => {
   const env = c.env;
   const url = new URL(c.req.url);
+  const requestConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   const error = url.searchParams.get('error');
 
   if (error) {
-    return c.redirect(`${env.APP_URL}/auth/error?error=${encodeURIComponent(error)}`);
+    return c.redirect(`${requestConfig.appUrl}/auth/error?error=${encodeURIComponent(error)}`);
   }
 
   if (!code || !state) {
-    return c.redirect(`${env.APP_URL}/auth/error?error=missing_params`);
+    return c.redirect(`${requestConfig.appUrl}/auth/error?error=missing_params`);
   }
 
   // 验证 state
   const storedStateData = await env.KV_SESSIONS.get(`oauth:state:${state}`);
   if (!storedStateData) {
-    return c.redirect(`${env.APP_URL}/auth/error?error=invalid_state`);
+    return c.redirect(`${requestConfig.appUrl}/auth/error?error=invalid_state`);
   }
   await env.KV_SESSIONS.delete(`oauth:state:${state}`);
 
@@ -157,7 +160,8 @@ authRoutes.get('/google/callback', async (c) => {
   }
 
   // 计算 safe return URL
-  const fallbackReturnUrl = `${env.APP_URL}/pro`;
+  const productConfig = getProductConfigForReturnUrl(returnUrl, env);
+  const fallbackReturnUrl = `${productConfig.frontendUrl}${productConfig.defaultReturnPath}`;
   const safeReturnUrl = getSafeReturnUrl(returnUrl, fallbackReturnUrl);
   let safe_return_url_host = '';
   try {
@@ -177,7 +181,7 @@ authRoutes.get('/google/callback', async (c) => {
   }));
 
   // 用 code 换 token
-  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env);
+  const oauthRedirectUri = getOAuthRedirectUri(c.req.url, env, c.req.header('X-Forwarded-Host'));
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -199,7 +203,7 @@ authRoutes.get('/google/callback', async (c) => {
       grant_type: 'authorization_code',
       code_length: code.length,
     });
-    return c.redirect(`${env.APP_URL}/auth/error?error=token_exchange&details=${encodeURIComponent(err.slice(0, 200))}`);
+    return c.redirect(`${requestConfig.appUrl}/auth/error?error=token_exchange&details=${encodeURIComponent(err.slice(0, 200))}`);
   }
 
   const tokenData = await tokenRes.json() as {
@@ -215,7 +219,7 @@ authRoutes.get('/google/callback', async (c) => {
   });
 
   if (!userRes.ok) {
-    return c.redirect(`${env.APP_URL}/auth/error?error=userinfo`);
+    return c.redirect(`${requestConfig.appUrl}/auth/error?error=userinfo`);
   }
 
   const googleUser = await userRes.json() as {
@@ -387,19 +391,21 @@ authRoutes.post('/logout', async (c) => {
 authRoutes.get('/session', async (c) => {
   const token = getSessionToken(c.req.raw);
   if (!token) {
-    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null });
+    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null, purchases: [] });
   }
 
   const payload = await verifySession(token, c.env.KV_SESSIONS, c.env.JWT_SECRET);
   if (!payload) {
     c.header('Set-Cookie', clearCookie('session'));
-    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null });
+    return jsonResponse({ authenticated: false, user: null, credits: null, subscription: null, purchases: [] });
   }
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(payload.userId);
   const credits = await db.getCredits(payload.userId);
-  const subscription = await db.getSubscription(payload.userId);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  const subscription = await db.getActiveSubscriptionForProduct(payload.userId, productConfig.productId);
+  const purchases = await db.getActivePurchasesForProduct(payload.userId, productConfig.productId);
 
   return jsonResponse({
     authenticated: true,
@@ -421,6 +427,11 @@ authRoutes.get('/session', async (c) => {
       current_period_end: subscription.current_period_end,
       cancel_at_period_end: subscription.cancel_at_period_end,
     } : null,
+    purchases: purchases.map((purchase) => ({
+      plan_id: purchase.plan_id,
+      status: purchase.status,
+      purchased_at: purchase.created_at,
+    })),
   });
 });
 

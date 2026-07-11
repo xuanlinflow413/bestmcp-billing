@@ -44,13 +44,13 @@ npm run deploy:closure
 ## Google OAuth Console 必须配置
 Authorized redirect URI:
 ```text
-https://bestmcp-billing.xuanlinflow.workers.dev/api/auth/google/callback
+https://auth.bestmcpservers.com/api/auth/google/callback
 ```
 
 ## Stripe Webhook 必须配置
 Endpoint URL:
 ```text
-https://bestmcp-billing.xuanlinflow.workers.dev/api/webhooks/stripe
+https://auth.bestmcpservers.com/api/webhooks/stripe
 ```
 
 Recommended events:

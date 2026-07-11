@@ -95,24 +95,23 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
             const item = lineItems.data[0];
             if (item && item.price) {
               const priceId = item.price.id;
-              const plan = await db.getPlanByStripePriceId(priceId);
+              const metadataPlanId = session.metadata?.plan_id;
+              const plan = (metadataPlanId ? await db.getPlanById(metadataPlanId) : null)
+                || await db.getPlanByStripePriceId(priceId);
               
               if (plan) {
-                // 添加 credits（幂等：reference_id = session.id）
-                const result = await db.addCredits(
-                  userId,
-                  plan.credits_per_period,
-                  'purchase',
-                  `One-time purchase: ${plan.name}`,
-                  session.id,  // 使用 session.id 作为幂等键
-                  getProductSlug(plan.product_id) || undefined
-                );
-                
-                if (result) {
-                  console.log(`Added ${plan.credits_per_period} credits to user ${userId} for ${plan.name}`);
-                } else {
-                  console.log(`Skipped duplicate credit grant for session ${session.id}`);
+                const purchaseCreated = await db.createPurchase(userId, plan.id, session.id);
+                if (plan.credits_per_period > 0) {
+                  await db.addCredits(
+                    userId,
+                    plan.credits_per_period,
+                    'purchase',
+                    `One-time purchase: ${plan.name}`,
+                    session.id,
+                    getProductSlug(plan.product_id) || undefined
+                  );
                 }
+                console.log(`${purchaseCreated ? 'Recorded' : 'Skipped duplicate'} purchase ${session.id} for ${plan.name}; credits=${plan.credits_per_period}`);
               }
             }
           }

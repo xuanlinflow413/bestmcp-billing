@@ -63,7 +63,7 @@ UPDATE plans SET stripe_price_id = 'price_yyy', price_cents = 999, credits_alloc
 ```
 
 ### 4. 配置 Stripe Webhook
-Endpoint: `https://bestmcp-billing.xuanlinflow.workers.dev/api/webhooks/stripe`
+Endpoint: `https://auth.bestmcpservers.com/api/webhooks/stripe`
 Events:
 - `checkout.session.completed`
 - `invoice.payment_succeeded`

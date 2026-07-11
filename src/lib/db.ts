@@ -83,6 +83,16 @@ export interface Plan {
 	created_at: number;
 }
 
+export interface Purchase {
+	id: string;
+	user_id: string;
+	plan_id: string;
+	stripe_checkout_session_id: string;
+	status: 'active' | 'refunded' | 'revoked';
+	created_at: number;
+	updated_at: number;
+}
+
 export class DbClient {
 	constructor(private db: D1Database) {}
 
@@ -272,6 +282,23 @@ export class DbClient {
 		return result || null;
 	}
 
+	async getActiveSubscriptionForProduct(userId: string, productId: string): Promise<Subscription | null> {
+		const result = await this.db
+			.prepare(`
+				SELECT s.*
+				FROM subscriptions s
+				JOIN plans p ON s.plan_id = p.id
+				WHERE s.user_id = ?
+					AND p.product_id = ?
+					AND s.status IN ('active', 'trialing')
+				ORDER BY s.created_at DESC
+				LIMIT 1
+			`)
+			.bind(userId, productId)
+			.first<Subscription>();
+		return result || null;
+	}
+
 	async createSubscription(sub: Omit<Subscription, 'created_at' | 'updated_at'>): Promise<void> {
 		await this.db
 			.prepare(
@@ -323,11 +350,11 @@ export class DbClient {
 					slug,
 					name,
 					stripe_price_id,
-					interval,
+					billing_interval AS interval,
 					price_cents,
-					credits_per_period,
-					60 AS rate_limit_rpm,
-					2000 AS rate_limit_rpd,
+					credits_allocated AS credits_per_period,
+					rate_limit_rpm,
+					rate_limit_rpd,
 					is_active,
 					created_at
 				FROM plans
@@ -354,17 +381,56 @@ export class DbClient {
 			slug,
 			name,
 			stripe_price_id,
-			interval,
+			billing_interval AS interval,
 			price_cents,
-			credits_per_period,
-			60 AS rate_limit_rpm,
-			2000 AS rate_limit_rpd,
+			credits_allocated AS credits_per_period,
+			rate_limit_rpm,
+			rate_limit_rpd,
 			is_active,
 			created_at
 		FROM plans
 		WHERE id = ?
 	  `).bind(id).first<Plan>();
 	  return result || null;
+	}
+
+	// ===== One-time purchases =====
+	async createPurchase(userId: string, planId: string, checkoutSessionId: string): Promise<boolean> {
+		const result = await this.db
+			.prepare(`
+				INSERT OR IGNORE INTO purchases (
+					id, user_id, plan_id, stripe_checkout_session_id, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+			`)
+			.bind(crypto.randomUUID(), userId, planId, checkoutSessionId)
+			.run();
+		return (result.meta?.changes ?? 0) > 0;
+	}
+
+	async getActivePurchasesForProduct(userId: string, productId: string): Promise<Purchase[]> {
+		const result = await this.db
+			.prepare(`
+				SELECT pu.*
+				FROM purchases pu
+				JOIN plans p ON p.id = pu.plan_id
+				WHERE pu.user_id = ? AND p.product_id = ? AND pu.status = 'active'
+				ORDER BY pu.created_at DESC
+			`)
+			.bind(userId, productId)
+			.all<Purchase>();
+		return result.results || [];
+	}
+
+	async hasActivePurchase(userId: string, planId: string): Promise<boolean> {
+		const purchase = await this.db
+			.prepare(`
+				SELECT id FROM purchases
+				WHERE user_id = ? AND plan_id = ? AND status = 'active'
+				LIMIT 1
+			`)
+			.bind(userId, planId)
+			.first<{ id: string }>();
+		return Boolean(purchase);
 	}
 
 	// ===== Webhook Events =====

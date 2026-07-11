@@ -80,13 +80,13 @@ npx wrangler deploy
 ### Google OAuth Console
 添加回调 URI：
 ```
-https://bestmcp-billing.xuanlinflow.workers.dev/api/auth/google/callback
+https://auth.bestmcpservers.com/api/auth/google/callback
 ```
 
 ### Stripe Webhook
 添加 Endpoint：
 ```
-https://bestmcp-billing.xuanlinflow.workers.dev/api/webhooks/stripe
+https://auth.bestmcpservers.com/api/webhooks/stripe
 ```
 
 选择事件：
@@ -98,7 +98,7 @@ https://bestmcp-billing.xuanlinflow.workers.dev/api/webhooks/stripe
 
 ## 步骤 8：验证
 
-1. 打开 https://bestmcp-billing.xuanlinflow.workers.dev/dashboard
+1. 打开 https://auth.bestmcpservers.com/dashboard
 2. 点击 Login with Google
 3. 选择套餐 → Stripe Checkout → 支付
 4. 回到 dashboard 查看 credits/subscription

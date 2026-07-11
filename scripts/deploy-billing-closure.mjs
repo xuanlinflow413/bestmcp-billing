@@ -47,21 +47,31 @@ async function stripeGet(path) {
   return JSON.parse(text);
 }
 
-function productName(productMap, productId) {
-  const product = productMap.get(productId);
+function productName(productMap, productRef) {
+  const product = typeof productRef === 'object' ? productRef : productMap.get(productRef);
   return `${product?.name || ''} ${product?.metadata?.app || ''} ${product?.metadata?.slug || ''}`.toLowerCase();
 }
 
-function choosePrice(prices, productMap, { appNeedle, amount }) {
-  const explicit = process.env[`${appNeedle.toUpperCase()}_PRO_PRICE_ID`];
-  if (explicit) return explicit.trim();
-
-  const candidates = prices.filter((price) => {
+function choosePrice(prices, productMap, { appNeedle, amount, liveMode }) {
+  const matchesContract = (price) => {
     if (!price.active || !price.recurring) return false;
+    if (price.livemode !== liveMode) return false;
     if (price.currency !== 'usd') return false;
     if (typeof price.unit_amount !== 'number' || price.unit_amount !== amount) return false;
+    if (price.recurring.interval !== 'month') return false;
     return productName(productMap, price.product).includes(appNeedle);
-  });
+  };
+
+  const explicit = process.env[`${appNeedle.toUpperCase()}_PRO_PRICE_ID`];
+  if (explicit) {
+    const selected = prices.find((price) => price.id === explicit.trim());
+    if (!selected || !matchesContract(selected)) {
+      throw new Error(`Explicit ${appNeedle.toUpperCase()}_PRO_PRICE_ID does not match the expected mode, product, USD amount, and monthly interval`);
+    }
+    return selected.id;
+  }
+
+  const candidates = prices.filter(matchesContract);
 
   if (candidates.length !== 1) {
     const safeCandidates = prices
@@ -107,9 +117,11 @@ async function main() {
     if (typeof price.product === 'object') productMap.set(price.product.id, price.product);
   }
 
-  const bestmcpPriceId = choosePrice(pricesResponse.data, productMap, { appNeedle: 'bestmcp', amount: 999 });
-  const kindreplyPriceId = choosePrice(pricesResponse.data, productMap, { appNeedle: 'kindreply', amount: 799 });
-  console.log('Stripe prices selected: bestmcp=[REDACTED], kindreply=[REDACTED]');
+  const liveMode = requireEnv('STRIPE_SECRET_KEY').startsWith('sk_live_');
+  const bestmcpPriceId = choosePrice(pricesResponse.data, productMap, { appNeedle: 'bestmcp', amount: 1900, liveMode });
+  const kindreplyPriceId = choosePrice(pricesResponse.data, productMap, { appNeedle: 'kindreply', amount: 999, liveMode });
+  const cleartextPriceId = choosePrice(pricesResponse.data, productMap, { appNeedle: 'cleartext', amount: 999, liveMode });
+  console.log('Stripe prices selected: bestmcp=[REDACTED], kindreply=[REDACTED], cleartext=[REDACTED]');
 
   console.log('3/7 Write Cloudflare Worker secrets...');
   for (const name of secrets) {
@@ -118,8 +130,7 @@ async function main() {
   }
 
   console.log('4/7 Apply remote D1 migrations...');
-  wrangler(['d1', 'execute', DB_NAME, '--remote', '--file=./migrations/0001_init.sql']);
-  wrangler(['d1', 'execute', DB_NAME, '--remote', '--file=./migrations/0002_billing_closure.sql']);
+  wrangler(['d1', 'migrations', 'apply', DB_NAME, '--remote']);
 
   console.log('5/7 Update remote D1 plan -> Stripe price mapping...');
   const dir = mkdtempSync(join(tmpdir(), 'billing-price-map-'));
@@ -127,11 +138,16 @@ async function main() {
   try {
     const escapeSql = (value) => value.replaceAll("'", "''");
     writeFileSync(sqlPath, `
-UPDATE plans SET stripe_price_id = '${escapeSql(bestmcpPriceId)}', updated_at = unixepoch() WHERE id = 'plan_bestmcp_pro';
-UPDATE plans SET stripe_price_id = '${escapeSql(kindreplyPriceId)}', updated_at = unixepoch() WHERE id = 'plan_kindreply_pro';
-SELECT id, slug, CASE WHEN stripe_price_id IS NULL THEN 'missing' ELSE 'configured' END AS price_status FROM plans ORDER BY id;
+UPDATE plans SET stripe_price_id = '${escapeSql(bestmcpPriceId)}' WHERE id = 'plan_bestmcp_pro';
+UPDATE plans SET stripe_price_id = '${escapeSql(kindreplyPriceId)}' WHERE id = 'plan_kindreply_pro';
+UPDATE plans SET stripe_price_id = '${escapeSql(cleartextPriceId)}' WHERE id = 'plan_cleartext_pro';
+SELECT id, slug, CASE WHEN stripe_price_id IS NULL THEN 'missing' ELSE 'configured' END AS price_status FROM plans WHERE id IN ('plan_bestmcp_pro', 'plan_kindreply_pro', 'plan_cleartext_pro') ORDER BY id;
 `);
     const output = wrangler(['d1', 'execute', DB_NAME, '--remote', '--file', sqlPath]);
+    const configuredCount = (output.match(/"price_status": "configured"/g) || []).length;
+    if (configuredCount !== 3) {
+      throw new Error(`Expected three configured Pro plan mappings, got ${configuredCount}`);
+    }
     console.log(output.replace(/price_[A-Za-z0-9_]+/g, '[REDACTED_PRICE_ID]'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -156,7 +172,7 @@ SELECT id, slug, CASE WHEN stripe_price_id IS NULL THEN 'missing' ELSE 'configur
   }
   console.log('/api/auth/google: HTTP 302 to Google OAuth');
 
-  console.log('DONE: deploy pipeline completed. Manual browser test remains: Google login, BestMCP Pro checkout, KindReply Pro checkout, Stripe test payment, webhook confirmation.');
+  console.log('DONE: deploy pipeline completed. Manual browser test remains: Google login, each Pro checkout, Stripe test payment, webhook confirmation.');
 }
 
 main().catch((error) => {
