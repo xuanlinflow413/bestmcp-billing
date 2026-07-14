@@ -25,10 +25,11 @@ function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
   return typeof sub === 'string' ? sub : sub.id;
 }
 
-function getProductSlug(productId: string | null | undefined): 'bestmcp' | 'kindreply' | 'cleartext' | null {
+function getProductSlug(productId: string | null | undefined): 'bestmcp' | 'kindreply' | 'cleartext' | 'editimages' | null {
   if (productId === 'prod_bestmcp') return 'bestmcp';
   if (productId === 'prod_kindreply') return 'kindreply';
   if (productId === 'prod_cleartext') return 'cleartext';
+  if (productId === 'prod_editimages') return 'editimages';
   return null;
 }
 

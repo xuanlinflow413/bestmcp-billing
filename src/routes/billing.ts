@@ -59,13 +59,14 @@ async function authMiddleware(c: any, next: any) {
  * 获取所有可售套餐。前端只传 plan_id，后端从 D1 读取真实 Stripe price_id。
  */
 billingRoutes.get('/plans', async (c) => {
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   const { results } = await c.env.DB.prepare(
     `SELECT p.*, pr.name as product_name, pr.slug as product_slug
      FROM plans p
      JOIN products pr ON p.product_id = pr.id
-     WHERE p.is_active = 1 AND p.price_cents > 0
+     WHERE p.is_active = 1 AND p.price_cents > 0 AND p.product_id = ?
      ORDER BY pr.slug ASC, p.price_cents ASC`
-  ).all();
+  ).bind(productConfig.productId).all();
   return jsonResponse({ plans: results });
 });
 
@@ -95,6 +96,9 @@ billingRoutes.post('/checkout', async (c) => {
   if (!plan || !plan.is_active || plan.price_cents <= 0) {
     return errorResponse('Plan not found or unavailable', 404);
   }
+  if (plan.product_id !== productConfig.productId) {
+    return errorResponse('Plan not found or unavailable', 404);
+  }
 
   const isSubscription = plan.interval === 'month' || plan.interval === 'year';
   if (isSubscription) {
@@ -105,6 +109,9 @@ billingRoutes.post('/checkout', async (c) => {
   }
 
   const configuredPriceId = plan.stripe_price_id?.startsWith('price_') ? plan.stripe_price_id : null;
+  if (!configuredPriceId) {
+    return errorResponse('Checkout is not configured for this plan', 503, 'CHECKOUT_UNAVAILABLE');
+  }
 
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
@@ -123,20 +130,10 @@ billingRoutes.post('/checkout', async (c) => {
   // 根据套餐类型决定 Checkout mode
   const mode = isSubscription ? 'subscription' : 'payment';
 
-  const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = configuredPriceId
-    ? { price: configuredPriceId, quantity: 1 }
-    : {
-        price_data: {
-          currency: 'usd',
-          unit_amount: plan.price_cents,
-          product_data: {
-            name: plan.name,
-            metadata: { product_id: plan.product_id, plan_id: plan.id },
-          },
-          recurring: isSubscription ? { interval: plan.interval as 'month' | 'year' } : undefined,
-        },
-        quantity: 1,
-      };
+  const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = {
+    price: configuredPriceId,
+    quantity: 1,
+  };
 
   const sessionConfig: Stripe.Checkout.SessionCreateParams = {
     customer: customerId,

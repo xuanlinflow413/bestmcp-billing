@@ -46,7 +46,7 @@ export interface CreditTransaction {
 	balance_after: number;
 	description: string | null;
 	reference_id: string | null;
-	product: 'bestmcp' | 'kindreply' | 'cleartext' | null;
+	product: 'bestmcp' | 'kindreply' | 'cleartext' | 'editimages' | null;
 	metadata: string | null;
 	created_at: number;
 }

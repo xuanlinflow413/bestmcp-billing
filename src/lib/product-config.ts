@@ -44,6 +44,17 @@ const CLEARTEXT_CONFIG: ProductConfig = {
   portalReturnPath: '/pricing/',
 };
 
+const EDITIMAGES_CONFIG: ProductConfig = {
+  productId: 'prod_editimages',
+  appUrl: 'https://editimages.app',
+  frontendUrl: 'https://editimages.app',
+  oauthRedirectUri: 'https://auth.editimages.app/api/auth/google/callback',
+  defaultReturnPath: '/account/',
+  checkoutSuccessPath: '/account/?checkout=success',
+  checkoutCancelPath: '/account/?checkout=cancelled',
+  portalReturnPath: '/account/',
+};
+
 function getRequestHost(requestUrl: string): string {
   try {
     return new URL(requestUrl).host;
@@ -83,6 +94,15 @@ export function getProductConfigForHost(host: string): ProductConfig {
     || normalizedHost.endsWith('.cleartextdetector.pages.dev')
   ) {
     return CLEARTEXT_CONFIG;
+  }
+
+  if (
+    normalizedHost === 'editimages.app'
+    || normalizedHost === 'www.editimages.app'
+    || normalizedHost === 'auth.editimages.app'
+    || normalizedHost.endsWith('.editimages.pages.dev')
+  ) {
+    return EDITIMAGES_CONFIG;
   }
 
   return BESTMCP_CONFIG;

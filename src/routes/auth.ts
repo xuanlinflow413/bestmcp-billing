@@ -19,12 +19,15 @@ const ALLOWED_RETURN_HOSTS = [
   'www.bestmcpservers.com',
   'cleartextdetector.com',
   'www.cleartextdetector.com',
+  'editimages.app',
+  'www.editimages.app',
 ];
 
 const ALLOWED_RETURN_HOST_SUFFIXES = [
   '.kindreply.pages.dev',
   '.mcp-server-directory.pages.dev',
   '.cleartextdetector.pages.dev',
+  '.editimages.pages.dev',
 ];
 
 /**
@@ -362,6 +365,10 @@ authRoutes.post('/exchange', async (c) => {
 
   // 创建正式 session token
   const sessionToken = await createSession(user, env.KV_SESSIONS, env.JWT_SECRET);
+
+  // Service Binding proxies use this response to establish a host-only,
+  // HttpOnly session cookie on the product frontend domain.
+  c.header('Set-Cookie', setCookie('session', sessionToken, 7 * 24 * 60 * 60));
 
   // 返回用户信息和 session token（前端存储到 localStorage）
   return jsonResponse({
