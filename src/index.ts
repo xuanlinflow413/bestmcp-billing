@@ -7,6 +7,7 @@ import { creditsRoutes } from './routes/credits';
 import { billingRoutes } from './routes/billing';
 import { webhookRoutes } from './routes/webhook';
 import { apiKeyRoutes } from './routes/api-keys';
+import { imageRoutes } from './routes/images';
 import { handleWebhookQueue } from './queues/webhook';
 import { handleAuditQueue } from './queues/audit';
 import { handleCreditsQueue } from './queues/credits';
@@ -51,6 +52,7 @@ app.route('/api/credits', creditsRoutes);
 app.route('/api/billing', billingRoutes);
 app.route('/api/webhooks', webhookRoutes);
 app.route('/api/keys', apiKeyRoutes);
+app.route('/api/images', imageRoutes);
 
 // 404
 app.notFound((c) => c.json({ error: 'Not Found' }, 404));

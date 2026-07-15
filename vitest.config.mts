@@ -2,9 +2,10 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 
 export default defineWorkersConfig({
 	test: {
+		fileParallelism: false,
 		poolOptions: {
 			workers: {
-				wrangler: { configPath: './wrangler.jsonc' },
+				wrangler: { configPath: './wrangler.test.jsonc' },
 				miniflare: {
 					bindings: {
 						GOOGLE_CLIENT_ID: 'test-google-client',

@@ -40,6 +40,15 @@ async function createWebhookTable() {
 	)`).run();
 }
 
+async function createCreditTables() {
+	await env.DB.batch([
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, name TEXT, role TEXT, stripe_customer_id TEXT, is_active INTEGER DEFAULT 1)`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS credits (id TEXT PRIMARY KEY, user_id TEXT UNIQUE NOT NULL, balance INTEGER DEFAULT 0, lifetime_purchased INTEGER DEFAULT 0, lifetime_used INTEGER DEFAULT 0, updated_at INTEGER)`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS credit_transactions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, balance_after INTEGER NOT NULL, description TEXT, reference_id TEXT, product TEXT, metadata TEXT, created_at INTEGER)`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS image_credit_reservations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, reference_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, created_at INTEGER, updated_at INTEGER, UNIQUE(user_id, idempotency_key))`),
+	]);
+}
+
 describe("EditImages branded auth and billing", () => {
 	it("uses the branded OAuth callback through a forwarded host", async () => {
 		const response = await SELF.fetch(
@@ -108,5 +117,20 @@ describe("EditImages branded auth and billing", () => {
 		const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM webhook_events WHERE stripe_event_id = ?")
 			.bind(JSON.parse(payload).id).first<{ count: number }>();
 		expect(row?.count).toBe(1);
+	});
+
+	it("reserves, de-duplicates, and refunds an EditImages credit", async () => {
+		await createCreditTables();
+		const userId = `user_${crypto.randomUUID()}`;
+		await env.DB.batch([
+			env.DB.prepare("INSERT INTO users (id, email, role) VALUES (?, ?, 'user')").bind(userId, `${userId}@example.test`),
+			env.DB.prepare("INSERT INTO credits (id, user_id, balance, lifetime_purchased, lifetime_used, updated_at) VALUES (?, ?, 2, 2, 0, unixepoch())").bind(crypto.randomUUID(), userId),
+		]);
+		const db = new (await import('../src/lib/db')).DbClient(env.DB);
+		const referenceId = crypto.randomUUID();
+		expect(await db.reserveImageCredit(userId, 'edit-key-1234567890', referenceId)).toMatchObject({ success: true, balance: 1 });
+		expect((await db.getImageCreditReservation(userId, 'edit-key-1234567890'))?.status).toBe('pending');
+		expect(await db.refundImageCreditReservation(userId, referenceId)).toMatchObject({ alreadyProcessed: false, balance: 2 });
+		expect(await db.refundImageCreditReservation(userId, referenceId)).toMatchObject({ alreadyProcessed: true, balance: 2 });
 	});
 });

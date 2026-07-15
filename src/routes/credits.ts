@@ -8,6 +8,14 @@ import { errorResponse, jsonResponse } from '../lib/utils';
 
 const creditsRoutes = new Hono<AppContext>();
 
+const reservationSchema = z.object({
+  idempotency_key: z.string().trim().min(16).max(120).regex(/^[A-Za-z0-9_-]+$/),
+});
+
+const reservationActionSchema = z.object({
+  reference_id: z.string().uuid(),
+});
+
 /**
  * 认证中间件 - 支持 Session Cookie 或 Internal API Key
  */
@@ -82,6 +90,41 @@ creditsRoutes.get('/transactions', async (c) => {
   const transactions = await db.getCreditTransactions(userId, limit, offset);
 
   return jsonResponse({ transactions });
+});
+
+/** Reserve one EditImages credit before a model call. */
+creditsRoutes.post('/editimages/reserve', zValidator('json', reservationSchema), async (c) => {
+  const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
+  const { idempotency_key: idempotencyKey } = c.req.valid('json');
+  const db = new DbClient(c.env.DB);
+  const existing = await db.getImageCreditReservation(userId, idempotencyKey);
+  if (existing) {
+    return jsonResponse({ success: false, duplicate: true, status: existing.status, reference_id: existing.reference_id }, 409);
+  }
+
+  const referenceId = crypto.randomUUID();
+  const reserved = await db.reserveImageCredit(userId, idempotencyKey, referenceId);
+  if (!reserved.success) return errorResponse('Insufficient credits', 402, 'CREDITS_INSUFFICIENT');
+  return jsonResponse({ success: true, balance: reserved.balance, reference_id: referenceId }, 201);
+});
+
+creditsRoutes.post('/editimages/complete', zValidator('json', reservationActionSchema), async (c) => {
+  const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
+  const { reference_id: referenceId } = c.req.valid('json');
+  const completed = await new DbClient(c.env.DB).completeImageCreditReservation(userId, referenceId);
+  if (!completed) return errorResponse('Reservation not found or not pending', 409, 'RESERVATION_INVALID');
+  return jsonResponse({ success: true, reference_id: referenceId });
+});
+
+creditsRoutes.post('/editimages/refund', zValidator('json', reservationActionSchema), async (c) => {
+  const userId = c.get('userId');
+  if (!userId) return errorResponse('Unauthorized', 401);
+  const { reference_id: referenceId } = c.req.valid('json');
+  const result = await new DbClient(c.env.DB).refundImageCreditReservation(userId, referenceId);
+  if (!result) return errorResponse('Reservation not found', 404, 'RESERVATION_NOT_FOUND');
+  return jsonResponse({ success: true, alreadyProcessed: result.alreadyProcessed, balance: result.balance, reference_id: referenceId });
 });
 
 /**

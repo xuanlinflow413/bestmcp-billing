@@ -1,4 +1,4 @@
-import type { D1Database, KVNamespace, Queue, R2Bucket } from '@cloudflare/workers-types';
+import type { Ai, D1Database, KVNamespace, Queue, R2Bucket } from '@cloudflare/workers-types';
 
 export interface Env {
   // D1 数据库
@@ -16,6 +16,9 @@ export interface Env {
   QUEUE_WEBHOOK: Queue;
   QUEUE_AUDIT: Queue;
   QUEUE_CREDITS: Queue;
+
+  // Workers AI
+  AI: Ai;
 
   // 环境变量
   APP_ENV: string;

@@ -150,6 +150,86 @@ export class DbClient {
 		return result || null;
 	}
 
+	async getImageCreditReservation(userId: string, idempotencyKey: string): Promise<{ reference_id: string; status: string } | null> {
+		return await this.db.prepare(
+			'SELECT reference_id, status FROM image_credit_reservations WHERE user_id = ? AND idempotency_key = ?'
+		).bind(userId, idempotencyKey).first<{ reference_id: string; status: string }>() || null;
+	}
+
+	async reserveImageCredit(userId: string, idempotencyKey: string, referenceId: string): Promise<{ success: boolean; balance: number }> {
+		const credits = await this.getCredits(userId);
+		if (!credits || credits.balance < 1) return { success: false, balance: credits?.balance ?? 0 };
+
+		try {
+			await this.db.prepare(
+				`INSERT INTO image_credit_reservations (id, user_id, idempotency_key, reference_id, status, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, 'pending', unixepoch(), unixepoch())`
+			).bind(crypto.randomUUID(), userId, idempotencyKey, referenceId).run();
+		} catch {
+			return { success: false, balance: credits.balance };
+		}
+
+		const debit = await this.db.prepare(
+			`UPDATE credits SET balance = balance - 1, lifetime_used = lifetime_used + 1, updated_at = unixepoch()
+			 WHERE user_id = ? AND balance >= 1`
+		).bind(userId).run();
+		if (!debit.success || (debit.meta?.changes ?? 0) !== 1) {
+			await this.db.prepare("UPDATE image_credit_reservations SET status = 'refunded', updated_at = unixepoch() WHERE reference_id = ?").bind(referenceId).run();
+			return { success: false, balance: (await this.getCredits(userId))?.balance ?? 0 };
+		}
+
+		const balance = (await this.getCredits(userId))?.balance ?? 0;
+		try {
+			await this.createCreditTransaction({
+				id: crypto.randomUUID(), user_id: userId, type: 'usage', amount: -1, balance_after: balance,
+				description: 'EditImages AI image edit reservation', reference_id: referenceId,
+				product: 'editimages', metadata: null, created_at: Math.floor(Date.now() / 1000),
+			});
+		} catch (error) {
+			await this.db.prepare(
+				"UPDATE image_credit_reservations SET status = 'refunded', updated_at = unixepoch() WHERE reference_id = ? AND status = 'pending'"
+			).bind(referenceId).run();
+			await this.db.prepare(
+				'UPDATE credits SET balance = balance + 1, lifetime_used = MAX(0, lifetime_used - 1), updated_at = unixepoch() WHERE user_id = ?'
+			).bind(userId).run();
+			throw error;
+		}
+		return { success: true, balance };
+	}
+
+	async completeImageCreditReservation(userId: string, referenceId: string): Promise<boolean> {
+		const result = await this.db.prepare(
+			"UPDATE image_credit_reservations SET status = 'completed', updated_at = unixepoch() WHERE user_id = ? AND reference_id = ? AND status = 'pending'"
+		).bind(userId, referenceId).run();
+		return result.success && (result.meta?.changes ?? 0) === 1;
+	}
+
+	async refundImageCreditReservation(userId: string, referenceId: string): Promise<{ alreadyProcessed: boolean; balance: number } | null> {
+		const reservation = await this.db.prepare(
+			'SELECT status FROM image_credit_reservations WHERE user_id = ? AND reference_id = ?'
+		).bind(userId, referenceId).first<{ status: string }>();
+		if (!reservation) return null;
+		if (reservation.status === 'refunded') return { alreadyProcessed: true, balance: (await this.getCredits(userId))?.balance ?? 0 };
+		if (reservation.status !== 'pending') return null;
+
+		const changed = await this.db.prepare(
+			"UPDATE image_credit_reservations SET status = 'refunded', updated_at = unixepoch() WHERE user_id = ? AND reference_id = ? AND status = 'pending'"
+		).bind(userId, referenceId).run();
+		if (!changed.success || (changed.meta?.changes ?? 0) !== 1) {
+			return { alreadyProcessed: true, balance: (await this.getCredits(userId))?.balance ?? 0 };
+		}
+		await this.db.prepare(
+			'UPDATE credits SET balance = balance + 1, lifetime_used = MAX(0, lifetime_used - 1), updated_at = unixepoch() WHERE user_id = ?'
+		).bind(userId).run();
+		const balance = (await this.getCredits(userId))?.balance ?? 0;
+		await this.createCreditTransaction({
+			id: crypto.randomUUID(), user_id: userId, type: 'refund', amount: 1, balance_after: balance,
+			description: 'EditImages AI image edit refund', reference_id: `refund:${referenceId}`,
+			product: 'editimages', metadata: null, created_at: Math.floor(Date.now() / 1000),
+		});
+		return { alreadyProcessed: false, balance };
+	}
+
 	async createCredits(userId: string): Promise<Credits> {
 		const id = crypto.randomUUID();
 		await this.db

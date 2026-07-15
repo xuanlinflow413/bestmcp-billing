@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bestmcp-billing-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bestmcp-billing-db", "database_id": "3d8b896a-742f-4760-974b-2a15a706236e" }
+  ],
+  "kv_namespaces": [
+    { "binding": "KV_SESSIONS", "id": "7a6e1f24ab5348568c71d680515f4a3a" },
+    { "binding": "KV_RATELIMIT", "id": "189ed38d0aea4c86b24d6c8e37e1c81c" },
+    { "binding": "KV_CACHE", "id": "9c6c72df671946cd9d6aa08c782128e7" }
+  ],
+  "r2_buckets": [
+    { "binding": "R2_STORAGE", "bucket_name": "bestmcp-billing-assets" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "QUEUE_WEBHOOK", "queue": "bestmcp-billing-webhooks" },
+      { "binding": "QUEUE_AUDIT", "queue": "bestmcp-billing-audit" },
+      { "binding": "QUEUE_CREDITS", "queue": "bestmcp-billing-credits" }
+    ],
+    "consumers": [
+      { "queue": "bestmcp-billing-webhooks", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 3 },
+      { "queue": "bestmcp-billing-audit", "max_batch_size": 100, "max_batch_timeout": 10, "max_retries": 3 },
+      { "queue": "bestmcp-billing-credits", "max_batch_size": 50, "max_batch_timeout": 5, "max_retries": 3 }
+    ]
+  },
+  "vars": {
+    "APP_ENV": "test",
+    "APP_URL": "http://example.test",
+    "FRONTEND_URL": "http://example.test",
+    "API_URL": "http://example.test",
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://example.test/api/auth/google/callback"
+  }
+}
