@@ -26,6 +26,7 @@ export interface Env {
   FRONTEND_URL: string;
   API_URL: string;
   GOOGLE_OAUTH_REDIRECT_URI: string;
+  PRODUCT_CREDITS_V2_PRODUCTS: string;
 
   // Secrets (通过 wrangler secret 设置)
   GOOGLE_CLIENT_ID: string;

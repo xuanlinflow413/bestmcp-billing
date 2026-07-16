@@ -60,6 +60,7 @@ async function authMiddleware(c: any, next: any) {
  */
 billingRoutes.get('/plans', async (c) => {
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const { results } = await c.env.DB.prepare(
     `SELECT p.*, pr.name as product_name, pr.slug as product_slug
      FROM plans p
@@ -81,6 +82,7 @@ billingRoutes.post('/checkout', async (c) => {
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
 
   const body = await c.req
     .json<{ plan_id?: string; success_url?: string; cancel_url?: string }>()
@@ -192,6 +194,7 @@ billingRoutes.post('/portal', async (c) => {
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(userId);

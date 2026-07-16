@@ -38,6 +38,16 @@ export interface Credits {
 	updated_at: number;
 }
 
+export interface ProductCredits {
+	user_id: string;
+	product_id: string;
+	balance: number;
+	lifetime_purchased: number;
+	lifetime_used: number;
+	created_at: number;
+	updated_at: number;
+}
+
 export interface CreditTransaction {
 	id: string;
 	user_id: string;
@@ -148,6 +158,160 @@ export class DbClient {
 	async getCredits(userId: string): Promise<Credits | null> {
 		const result = await this.db.prepare('SELECT * FROM credits WHERE user_id = ?').bind(userId).first<Credits>();
 		return result || null;
+	}
+
+	async getProductCredits(userId: string, productId: string): Promise<ProductCredits | null> {
+		return await this.db.prepare(
+			'SELECT * FROM product_credit_balances WHERE user_id = ? AND product_id = ?'
+		).bind(userId, productId).first<ProductCredits>() || null;
+	}
+
+	async ensureProductCredits(userId: string, productId: string, welcomeCredits = 0): Promise<ProductCredits> {
+		const welcomeKey = `welcome:${productId}`;
+		await this.db.batch([
+			this.db.prepare(`
+				INSERT OR IGNORE INTO product_credit_balances
+					(user_id, product_id, balance, lifetime_purchased, lifetime_used, created_at, updated_at)
+				VALUES (?, ?, 0, 0, 0, unixepoch(), unixepoch())
+			`).bind(userId, productId),
+			this.db.prepare(`
+				INSERT OR IGNORE INTO product_credit_ledger
+					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
+				SELECT ?, ?, ?, 'bonus', ?, ?, 'Welcome credits', ?, ?, NULL, unixepoch()
+				WHERE ? > 0
+			`).bind(crypto.randomUUID(), userId, productId, welcomeCredits, welcomeCredits, welcomeKey, welcomeKey, welcomeCredits),
+			this.db.prepare(`
+				UPDATE product_credit_balances
+				SET balance = balance + ?, updated_at = unixepoch()
+				WHERE user_id = ? AND product_id = ? AND changes() = 1
+			`).bind(welcomeCredits, userId, productId),
+		]);
+		const credits = await this.getProductCredits(userId, productId);
+		if (!credits) throw new Error('Product credits could not be initialized');
+		return credits;
+	}
+
+	async getProductCreditTransactions(userId: string, productId: string, limit = 50, offset = 0): Promise<Record<string, unknown>[]> {
+		const result = await this.db.prepare(
+			'SELECT * FROM product_credit_ledger WHERE user_id = ? AND product_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+		).bind(userId, productId, limit, offset).all<Record<string, unknown>>();
+		return result.results || [];
+	}
+
+	async getProductCreditReservation(userId: string, productId: string, idempotencyKey: string): Promise<{ reference_id: string; status: string } | null> {
+		return await this.db.prepare(
+			'SELECT reference_id, status FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND idempotency_key = ?'
+		).bind(userId, productId, idempotencyKey).first<{ reference_id: string; status: string }>() || null;
+	}
+
+	async reserveProductCredit(userId: string, productId: string, idempotencyKey: string, referenceId: string, amount = 1): Promise<{ success: boolean; duplicate: boolean; balance: number }> {
+		await this.db.batch([
+			this.db.prepare(`
+				INSERT OR IGNORE INTO product_credit_reservations
+					(id, user_id, product_id, idempotency_key, reference_id, amount, status, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, 'pending', unixepoch(), unixepoch())
+			`).bind(crypto.randomUUID(), userId, productId, idempotencyKey, referenceId, amount),
+			this.db.prepare(`
+				UPDATE product_credit_balances
+				SET balance = balance - ?, lifetime_used = lifetime_used + ?, updated_at = unixepoch()
+				WHERE user_id = ? AND product_id = ? AND balance >= ? AND changes() = 1
+			`).bind(amount, amount, userId, productId, amount),
+			this.db.prepare(`
+				INSERT INTO product_credit_ledger
+					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
+				SELECT ?, ?, ?, 'usage', ?, balance, 'AI image edit reservation', ?, ?, NULL, unixepoch()
+				FROM product_credit_balances
+				WHERE user_id = ? AND product_id = ? AND changes() = 1
+			`).bind(crypto.randomUUID(), userId, productId, -amount, referenceId, `reserve:${idempotencyKey}`, userId, productId),
+			this.db.prepare(`
+				UPDATE product_credit_reservations
+				SET status = 'refunded', updated_at = unixepoch()
+				WHERE user_id = ? AND product_id = ? AND reference_id = ? AND status = 'pending'
+				  AND NOT EXISTS (
+					SELECT 1 FROM product_credit_ledger
+					WHERE user_id = ? AND product_id = ? AND reference_id = ? AND type = 'usage'
+				  )
+			`).bind(userId, productId, referenceId, userId, productId, referenceId),
+		]);
+		const reservation = await this.db.prepare(
+			'SELECT reference_id, status FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND idempotency_key = ?'
+		).bind(userId, productId, idempotencyKey).first<{ reference_id: string; status: string }>();
+		const balance = (await this.getProductCredits(userId, productId))?.balance ?? 0;
+		return {
+			success: reservation?.reference_id === referenceId && reservation.status === 'pending',
+			duplicate: Boolean(reservation && reservation.reference_id !== referenceId),
+			balance,
+		};
+	}
+
+	async completeProductCreditReservation(userId: string, productId: string, referenceId: string): Promise<boolean> {
+		const result = await this.db.prepare(
+			"UPDATE product_credit_reservations SET status = 'completed', updated_at = unixepoch() WHERE user_id = ? AND product_id = ? AND reference_id = ? AND status = 'pending'"
+		).bind(userId, productId, referenceId).run();
+		return result.success && (result.meta?.changes ?? 0) === 1;
+	}
+
+	async refundProductCreditReservation(userId: string, productId: string, referenceId: string): Promise<{ alreadyProcessed: boolean; balance: number } | null> {
+		const existing = await this.db.prepare(
+			'SELECT status, amount FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND reference_id = ?'
+		).bind(userId, productId, referenceId).first<{ status: string; amount: number }>();
+		if (!existing || existing.status === 'completed') return null;
+		if (existing.status === 'refunded') {
+			return { alreadyProcessed: true, balance: (await this.getProductCredits(userId, productId))?.balance ?? 0 };
+		}
+		await this.db.batch([
+			this.db.prepare(
+				"UPDATE product_credit_reservations SET status = 'refunded', updated_at = unixepoch() WHERE user_id = ? AND product_id = ? AND reference_id = ? AND status = 'pending'"
+			).bind(userId, productId, referenceId),
+			this.db.prepare(`
+				UPDATE product_credit_balances
+				SET balance = balance + ?, lifetime_used = MAX(0, lifetime_used - ?), updated_at = unixepoch()
+				WHERE user_id = ? AND product_id = ? AND changes() = 1
+			`).bind(existing.amount, existing.amount, userId, productId),
+			this.db.prepare(`
+				INSERT INTO product_credit_ledger
+					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
+				SELECT ?, ?, ?, 'refund', ?, balance, 'AI image edit refund', ?, ?, NULL, unixepoch()
+				FROM product_credit_balances
+				WHERE user_id = ? AND product_id = ? AND changes() = 1
+			`).bind(crypto.randomUUID(), userId, productId, existing.amount, `refund:${referenceId}`, `refund:${referenceId}`, userId, productId),
+		]);
+		const reservation = await this.db.prepare(
+			'SELECT status FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND reference_id = ?'
+		).bind(userId, productId, referenceId).first<{ status: string }>();
+		if (reservation?.status !== 'refunded') return null;
+		const refund = await this.db.prepare(
+			"SELECT 1 AS found FROM product_credit_ledger WHERE user_id = ? AND product_id = ? AND idempotency_key = ?"
+		).bind(userId, productId, `refund:${referenceId}`).first<{ found: number }>();
+		return {
+			alreadyProcessed: !refund,
+			balance: (await this.getProductCredits(userId, productId))?.balance ?? 0,
+		};
+	}
+
+	async addProductCredits(userId: string, productId: string, amount: number, type: CreditTransaction['type'], description: string, referenceId: string): Promise<ProductCredits | null> {
+		await this.ensureProductCredits(userId, productId, 0);
+		const idempotencyKey = `${type}:${referenceId}`;
+		const existing = await this.db.prepare(
+			'SELECT 1 AS found FROM product_credit_ledger WHERE user_id = ? AND product_id = ? AND idempotency_key = ?'
+		).bind(userId, productId, idempotencyKey).first<{ found: number }>();
+		if (existing) return null;
+		await this.db.batch([
+			this.db.prepare(`
+				INSERT OR IGNORE INTO product_credit_ledger
+					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
+				SELECT ?, ?, ?, ?, ?, balance + ?, ?, ?, ?, NULL, unixepoch()
+				FROM product_credit_balances WHERE user_id = ? AND product_id = ?
+			`).bind(crypto.randomUUID(), userId, productId, type, amount, amount, description, referenceId, idempotencyKey, userId, productId),
+			this.db.prepare(`
+				UPDATE product_credit_balances
+				SET balance = balance + ?,
+					lifetime_purchased = CASE WHEN ? IN ('purchase', 'subscription_grant') THEN lifetime_purchased + ? ELSE lifetime_purchased END,
+					updated_at = unixepoch()
+				WHERE user_id = ? AND product_id = ? AND changes() = 1
+			`).bind(amount, type, amount, userId, productId),
+		]);
+		return this.getProductCredits(userId, productId);
 	}
 
 	async getImageCreditReservation(userId: string, idempotencyKey: string): Promise<{ reference_id: string; status: string } | null> {

@@ -3,6 +3,7 @@ import { DbClient } from '../lib/db';
 import { getSessionToken, verifySession } from '../lib/auth';
 import { errorResponse } from '../lib/utils';
 import type { AppContext } from '../types';
+import { getProductConfigForRequest, usesProductCreditsV2 } from '../lib/product-config';
 
 const MODEL = '@cf/black-forest-labs/flux-2-klein-4b';
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -45,6 +46,9 @@ async function currentUser(c: any): Promise<string | null> {
 }
 
 imageRoutes.post('/edit', async (c) => {
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig || productConfig.productId !== 'prod_editimages') return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  if (!usesProductCreditsV2(productConfig.productId, c.env)) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
   const userId = await currentUser(c);
   if (!userId) return errorResponse('Authentication required', 401);
   if (!c.env.AI) return errorResponse('AI image editing is unavailable', 503, 'AI_UNAVAILABLE');
@@ -69,10 +73,11 @@ imageRoutes.post('/edit', async (c) => {
   if (!/^[A-Za-z0-9_-]{16,120}$/.test(idempotencyKey)) return errorResponse('Valid idempotencyKey required', 400, 'IDEMPOTENCY_KEY_INVALID');
 
   const db = new DbClient(c.env.DB);
-  const existing = await db.getImageCreditReservation(userId, idempotencyKey);
+  await db.ensureProductCredits(userId, productConfig.productId, 2);
+  const existing = await db.getProductCreditReservation(userId, productConfig.productId, idempotencyKey);
   if (existing) return errorResponse('This edit request was already submitted', 409, 'DUPLICATE_REQUEST');
   const referenceId = crypto.randomUUID();
-  const reserved = await db.reserveImageCredit(userId, idempotencyKey, referenceId);
+  const reserved = await db.reserveProductCredit(userId, productConfig.productId, idempotencyKey, referenceId);
   if (!reserved.success) return errorResponse('Insufficient credits', 402, 'CREDITS_INSUFFICIENT');
 
   try {
@@ -93,7 +98,7 @@ imageRoutes.post('/edit', async (c) => {
     }
     const output = Uint8Array.from(atob(result.image), (character) => character.charCodeAt(0));
     if (output.byteLength < 4 || output[0] !== 0xff || output[1] !== 0xd8) throw new Error('Workers AI returned an invalid image');
-    if (!await db.completeImageCreditReservation(userId, referenceId)) throw new Error('Credit reservation could not be completed');
+    if (!await db.completeProductCreditReservation(userId, productConfig.productId, referenceId)) throw new Error('Credit reservation could not be completed');
     const headers = new Headers();
     headers.set('content-type', 'image/jpeg');
     headers.set('cache-control', 'private, no-store');
@@ -101,7 +106,7 @@ imageRoutes.post('/edit', async (c) => {
     headers.delete('content-disposition');
     return new Response(output, { status: 200, headers });
   } catch {
-    await db.refundImageCreditReservation(userId, referenceId);
+    await db.refundProductCreditReservation(userId, productConfig.productId, referenceId);
     return errorResponse('AI image editing failed; the reserved credit was refunded', 502, 'AI_EDIT_FAILED');
   }
 });

@@ -33,6 +33,7 @@
     "APP_URL": "http://example.test",
     "FRONTEND_URL": "http://example.test",
     "API_URL": "http://example.test",
-    "GOOGLE_OAUTH_REDIRECT_URI": "http://example.test/api/auth/google/callback"
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://example.test/api/auth/google/callback",
+    "PRODUCT_CREDITS_V2_PRODUCTS": "prod_editimages"
   }
 }

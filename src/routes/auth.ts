@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { createSession, destroySession, getSessionToken, verifySession } from '../lib/auth';
-import { getProductConfigForRequest, getProductConfigForReturnUrl } from '../lib/product-config';
+import { getProductConfigForRequest, getProductConfigForReturnUrl, usesProductCreditsV2 } from '../lib/product-config';
 import { errorResponse, generateUUID, jsonResponse, now, setCookie, clearCookie } from '../lib/utils';
 
 const authRoutes = new Hono<AppContext>();
@@ -78,7 +78,7 @@ function getSafeReturnUrl(returnUrl: string | null, fallback: string): string {
 
 function getOAuthRedirectUri(requestUrl: string, env: AppContext['Bindings'], forwardedHost?: string | null): string {
   const requestConfig = getProductConfigForRequest(requestUrl, forwardedHost);
-  if (requestConfig.oauthRedirectUri) {
+  if (requestConfig?.oauthRedirectUri) {
     return requestConfig.oauthRedirectUri;
   }
   return env.GOOGLE_OAUTH_REDIRECT_URI;
@@ -122,6 +122,7 @@ authRoutes.get('/google/callback', async (c) => {
   const env = c.env;
   const url = new URL(c.req.url);
   const requestConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!requestConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   const error = url.searchParams.get('error');
@@ -164,6 +165,7 @@ authRoutes.get('/google/callback', async (c) => {
 
   // 计算 safe return URL
   const productConfig = getProductConfigForReturnUrl(returnUrl, env);
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const fallbackReturnUrl = `${productConfig.frontendUrl}${productConfig.defaultReturnPath}`;
   const safeReturnUrl = getSafeReturnUrl(returnUrl, fallbackReturnUrl);
   let safe_return_url_host = '';
@@ -409,8 +411,15 @@ authRoutes.get('/session', async (c) => {
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(payload.userId);
-  const credits = await db.getCredits(payload.userId);
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
+  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) {
+    return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  }
+  const credits = productCreditsV2
+    ? await db.ensureProductCredits(payload.userId, productConfig.productId, 2)
+    : await db.getCredits(payload.userId);
   const subscription = await db.getActiveSubscriptionForProduct(payload.userId, productConfig.productId);
   const purchases = await db.getActivePurchasesForProduct(payload.userId, productConfig.productId);
 

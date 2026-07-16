@@ -131,6 +131,9 @@ CREATE INDEX IF NOT EXISTS idx_credit_tx_type ON credit_transactions(type);
 CREATE INDEX IF NOT EXISTS idx_credit_tx_created ON credit_transactions(created_at);
 CREATE INDEX IF NOT EXISTS idx_credit_tx_reference ON credit_transactions(reference_id);
 
+-- Product-scoped credits v2 is defined in migrations/0007_add_product_credits_v2.sql.
+-- This base schema intentionally retains the legacy tables for existing products.
+
 -- ============================================
 -- 4. AI 调用日志
 -- ============================================

@@ -43,18 +43,24 @@ async function createWebhookTable() {
 async function createCreditTables() {
 	await env.DB.batch([
 		env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, name TEXT, role TEXT, stripe_customer_id TEXT, is_active INTEGER DEFAULT 1)`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS products (id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL, is_active INTEGER DEFAULT 1)`),
 		env.DB.prepare(`CREATE TABLE IF NOT EXISTS credits (id TEXT PRIMARY KEY, user_id TEXT UNIQUE NOT NULL, balance INTEGER DEFAULT 0, lifetime_purchased INTEGER DEFAULT 0, lifetime_used INTEGER DEFAULT 0, updated_at INTEGER)`),
 		env.DB.prepare(`CREATE TABLE IF NOT EXISTS credit_transactions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, balance_after INTEGER NOT NULL, description TEXT, reference_id TEXT, product TEXT, metadata TEXT, created_at INTEGER)`),
 		env.DB.prepare(`CREATE TABLE IF NOT EXISTS image_credit_reservations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, reference_id TEXT UNIQUE NOT NULL, status TEXT NOT NULL, created_at INTEGER, updated_at INTEGER, UNIQUE(user_id, idempotency_key))`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS product_credit_balances (user_id TEXT NOT NULL, product_id TEXT NOT NULL, balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0), lifetime_purchased INTEGER NOT NULL DEFAULT 0, lifetime_used INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (user_id, product_id))`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS product_credit_ledger (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, product_id TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, balance_after INTEGER NOT NULL, description TEXT, reference_id TEXT, idempotency_key TEXT NOT NULL, metadata TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE (user_id, product_id, idempotency_key))`),
+		env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_test_product_credit_ledger_reference ON product_credit_ledger(user_id, product_id, reference_id) WHERE reference_id IS NOT NULL`),
+		env.DB.prepare(`CREATE TABLE IF NOT EXISTS product_credit_reservations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, product_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, reference_id TEXT NOT NULL, amount INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch()), UNIQUE(user_id, product_id, idempotency_key), UNIQUE(user_id, product_id, reference_id))`),
+		env.DB.prepare(`INSERT OR IGNORE INTO products (id, name, slug) VALUES ('prod_editimages', 'EditImages', 'editimages')`),
 	]);
 }
 
 describe("EditImages branded auth and billing", () => {
-	it("uses the branded OAuth callback through a forwarded host", async () => {
+	it("uses the branded OAuth callback from the trusted request host", async () => {
 		const response = await SELF.fetch(
-			"http://bestmcp-billing/api/auth/google?returnUrl=https%3A%2F%2Feditimages.app%2Flogin%2F",
+			"http://auth.editimages.app/api/auth/google?returnUrl=https%3A%2F%2Feditimages.app%2Flogin%2F",
 			{
-				headers: { "X-Forwarded-Host": "auth.editimages.app" },
+				headers: { "X-Forwarded-Host": "auth.bestmcpservers.com" },
 				redirect: "manual",
 			},
 		);
@@ -75,8 +81,8 @@ describe("EditImages branded auth and billing", () => {
 			) VALUES ('plan_cleartext_pro', 'prod_cleartext', 'ClearText Pro', 'month', 999, 500, 1)`),
 		]);
 
-		const response = await SELF.fetch("http://bestmcp-billing/api/billing/plans", {
-			headers: { "X-Forwarded-Host": "auth.editimages.app" },
+		const response = await SELF.fetch("http://auth.editimages.app/api/billing/plans", {
+			headers: { "X-Forwarded-Host": "auth.bestmcpservers.com" },
 		});
 
 		expect(response.status).toBe(200);
@@ -127,10 +133,33 @@ describe("EditImages branded auth and billing", () => {
 			env.DB.prepare("INSERT INTO credits (id, user_id, balance, lifetime_purchased, lifetime_used, updated_at) VALUES (?, ?, 2, 2, 0, unixepoch())").bind(crypto.randomUUID(), userId),
 		]);
 		const db = new (await import('../src/lib/db')).DbClient(env.DB);
-		const referenceId = crypto.randomUUID();
-		expect(await db.reserveImageCredit(userId, 'edit-key-1234567890', referenceId)).toMatchObject({ success: true, balance: 1 });
-		expect((await db.getImageCreditReservation(userId, 'edit-key-1234567890'))?.status).toBe('pending');
-		expect(await db.refundImageCreditReservation(userId, referenceId)).toMatchObject({ alreadyProcessed: false, balance: 2 });
-		expect(await db.refundImageCreditReservation(userId, referenceId)).toMatchObject({ alreadyProcessed: true, balance: 2 });
+		const initialized = await Promise.all(Array.from({ length: 5 }, () => db.ensureProductCredits(userId, 'prod_editimages', 2)));
+		expect(initialized.every((credits) => credits.balance === 2)).toBe(true);
+		expect((await env.DB.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount FROM product_credit_ledger WHERE user_id = ? AND product_id = ? AND type = 'bonus'").bind(userId, 'prod_editimages').first<{ count: number; amount: number }>())).toEqual({ count: 1, amount: 2 });
+
+		const references = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+		const reservations = await Promise.all(references.map((referenceId, index) => db.reserveProductCredit(userId, 'prod_editimages', `edit-key-123456789${index}`, referenceId)));
+		expect(reservations.filter((result) => result.success)).toHaveLength(2);
+		expect((await db.getProductCredits(userId, 'prod_editimages'))?.balance).toBe(0);
+		expect((await db.getCredits(userId))?.balance).toBe(2);
+
+		const successfulReference = references[reservations.findIndex((result) => result.success)];
+		expect(await db.refundProductCreditReservation(userId, 'prod_editimages', successfulReference)).toMatchObject({ alreadyProcessed: false, balance: 1 });
+		expect(await db.refundProductCreditReservation(userId, 'prod_editimages', successfulReference)).toMatchObject({ alreadyProcessed: true, balance: 1 });
+		expect((await db.getCredits(userId))?.balance).toBe(2);
+	});
+
+	it("fails closed for unknown hosts and ignores spoofed forwarded product hosts", async () => {
+		const unknown = await SELF.fetch("http://unknown.example/api/billing/plans", {
+			headers: { "X-Forwarded-Host": "auth.editimages.app" },
+		});
+		expect(unknown.status).toBe(404);
+		expect(await unknown.json()).toMatchObject({ code: "PRODUCT_HOST_UNKNOWN" });
+
+		await createBillingTables();
+		const legacy = await SELF.fetch("http://auth.bestmcpservers.com/api/billing/plans", {
+			headers: { "X-Forwarded-Host": "auth.editimages.app" },
+		});
+		expect(legacy.status).toBe(200);
 	});
 });

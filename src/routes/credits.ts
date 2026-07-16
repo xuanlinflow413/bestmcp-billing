@@ -5,6 +5,7 @@ import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { verifySession, getSessionToken } from '../lib/auth';
 import { errorResponse, jsonResponse } from '../lib/utils';
+import { getProductConfigForRequest, usesProductCreditsV2 } from '../lib/product-config';
 
 const creditsRoutes = new Hono<AppContext>();
 
@@ -63,7 +64,11 @@ creditsRoutes.get('/', async (c) => {
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
   const db = new DbClient(c.env.DB);
-  const credits = await db.getCredits(userId);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
+  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  const credits = productCreditsV2 ? await db.ensureProductCredits(userId, productConfig.productId, 2) : await db.getCredits(userId);
 
   if (!credits) {
     return jsonResponse({ balance: 0, lifetime_used: 0, lifetime_purchased: 0 });
@@ -87,7 +92,11 @@ creditsRoutes.get('/transactions', async (c) => {
   const offset = parseInt(c.req.query('offset') || '0');
 
   const db = new DbClient(c.env.DB);
-  const transactions = await db.getCreditTransactions(userId, limit, offset);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
+  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  const transactions = productCreditsV2 ? await db.getProductCreditTransactions(userId, productConfig.productId, limit, offset) : await db.getCreditTransactions(userId, limit, offset);
 
   return jsonResponse({ transactions });
 });
@@ -98,13 +107,17 @@ creditsRoutes.post('/editimages/reserve', zValidator('json', reservationSchema),
   if (!userId) return errorResponse('Unauthorized', 401);
   const { idempotency_key: idempotencyKey } = c.req.valid('json');
   const db = new DbClient(c.env.DB);
-  const existing = await db.getImageCreditReservation(userId, idempotencyKey);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig || productConfig.productId !== 'prod_editimages') return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  if (!usesProductCreditsV2(productConfig.productId, c.env)) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  await db.ensureProductCredits(userId, productConfig.productId, 2);
+  const existing = await db.getProductCreditReservation(userId, productConfig.productId, idempotencyKey);
   if (existing) {
     return jsonResponse({ success: false, duplicate: true, status: existing.status, reference_id: existing.reference_id }, 409);
   }
 
   const referenceId = crypto.randomUUID();
-  const reserved = await db.reserveImageCredit(userId, idempotencyKey, referenceId);
+  const reserved = await db.reserveProductCredit(userId, productConfig.productId, idempotencyKey, referenceId);
   if (!reserved.success) return errorResponse('Insufficient credits', 402, 'CREDITS_INSUFFICIENT');
   return jsonResponse({ success: true, balance: reserved.balance, reference_id: referenceId }, 201);
 });
@@ -113,7 +126,9 @@ creditsRoutes.post('/editimages/complete', zValidator('json', reservationActionS
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
   const { reference_id: referenceId } = c.req.valid('json');
-  const completed = await new DbClient(c.env.DB).completeImageCreditReservation(userId, referenceId);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig || productConfig.productId !== 'prod_editimages') return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  const completed = await new DbClient(c.env.DB).completeProductCreditReservation(userId, productConfig.productId, referenceId);
   if (!completed) return errorResponse('Reservation not found or not pending', 409, 'RESERVATION_INVALID');
   return jsonResponse({ success: true, reference_id: referenceId });
 });
@@ -122,7 +137,9 @@ creditsRoutes.post('/editimages/refund', zValidator('json', reservationActionSch
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
   const { reference_id: referenceId } = c.req.valid('json');
-  const result = await new DbClient(c.env.DB).refundImageCreditReservation(userId, referenceId);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig || productConfig.productId !== 'prod_editimages') return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  const result = await new DbClient(c.env.DB).refundProductCreditReservation(userId, productConfig.productId, referenceId);
   if (!result) return errorResponse('Reservation not found', 404, 'RESERVATION_NOT_FOUND');
   return jsonResponse({ success: true, alreadyProcessed: result.alreadyProcessed, balance: result.balance, reference_id: referenceId });
 });

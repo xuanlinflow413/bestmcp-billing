@@ -1,6 +1,6 @@
 import type { AppContext } from '../types';
 
-type ProductConfig = {
+export type ProductConfig = {
   productId: string;
   appUrl: string;
   frontendUrl: string;
@@ -67,7 +67,7 @@ function normalizeHost(host: string | null | undefined): string {
   return (host || '').toLowerCase();
 }
 
-export function getProductConfigForHost(host: string): ProductConfig {
+export function getProductConfigForHost(host: string): ProductConfig | null {
   const normalizedHost = normalizeHost(host);
   if (
     normalizedHost === 'bestmcpservers.com'
@@ -105,17 +105,16 @@ export function getProductConfigForHost(host: string): ProductConfig {
     return EDITIMAGES_CONFIG;
   }
 
-  return BESTMCP_CONFIG;
+  return null;
 }
 
-export function getProductConfigForRequest(requestUrl: string, forwardedHost?: string | null): ProductConfig {
-  if (forwardedHost) {
-    return getProductConfigForHost(forwardedHost);
-  }
+export function getProductConfigForRequest(requestUrl: string, _forwardedHost?: string | null): ProductConfig | null {
+  // Product identity is derived from the request URL. X-Forwarded-Host is
+  // client-controlled on public endpoints and must not select a credit scope.
   return getProductConfigForHost(getRequestHost(requestUrl));
 }
 
-export function getProductConfigForReturnUrl(returnUrl: string | null | undefined, env: AppContext['Bindings']): ProductConfig {
+export function getProductConfigForReturnUrl(returnUrl: string | null | undefined, env: AppContext['Bindings']): ProductConfig | null {
   if (returnUrl) {
     try {
       return getProductConfigForHost(new URL(returnUrl).host);
@@ -132,4 +131,12 @@ export function getProductConfigForReturnUrl(returnUrl: string | null | undefine
     }
   })();
   return getProductConfigForHost(apiHost);
+}
+
+export function usesProductCreditsV2(productId: string, env: AppContext['Bindings']): boolean {
+  const enabledProducts = (env.PRODUCT_CREDITS_V2_PRODUCTS || '')
+	.split(',')
+	.map((value) => value.trim())
+	.filter(Boolean);
+  return enabledProducts.includes(productId);
 }
