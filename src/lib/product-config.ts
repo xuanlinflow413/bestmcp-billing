@@ -51,7 +51,7 @@ const EDITIMAGES_CONFIG: ProductConfig = {
   oauthRedirectUri: 'https://auth.editimages.app/api/auth/google/callback',
   defaultReturnPath: '/account/',
   checkoutSuccessPath: '/account/?checkout=success',
-  checkoutCancelPath: '/account/?checkout=cancelled',
+  checkoutCancelPath: '/account/?checkout=canceled',
   portalReturnPath: '/account/',
 };
 

@@ -420,7 +420,7 @@ authRoutes.get('/session', async (c) => {
   const credits = productCreditsV2
     ? await db.ensureProductCredits(payload.userId, productConfig.productId, 2)
     : await db.getCredits(payload.userId);
-  const subscription = await db.getActiveSubscriptionForProduct(payload.userId, productConfig.productId);
+  const subscription = await db.getLatestSubscriptionForProduct(payload.userId, productConfig.productId);
   const purchases = await db.getActivePurchasesForProduct(payload.userId, productConfig.productId);
 
   return jsonResponse({

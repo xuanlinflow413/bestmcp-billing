@@ -543,6 +543,38 @@ export class DbClient {
 		return result || null;
 	}
 
+	async getLatestSubscriptionForProduct(userId: string, productId: string): Promise<Subscription | null> {
+		const result = await this.db
+			.prepare(`
+				SELECT s.*
+				FROM subscriptions s
+				JOIN plans p ON s.plan_id = p.id
+				WHERE s.user_id = ? AND p.product_id = ?
+				ORDER BY s.created_at DESC
+				LIMIT 1
+			`)
+			.bind(userId, productId)
+			.first<Subscription>();
+		return result || null;
+	}
+
+	async getBlockingSubscriptionForProduct(userId: string, productId: string): Promise<Subscription | null> {
+		const result = await this.db
+			.prepare(`
+				SELECT s.*
+				FROM subscriptions s
+				JOIN plans p ON s.plan_id = p.id
+				WHERE s.user_id = ?
+					AND p.product_id = ?
+					AND s.status IN ('incomplete', 'active', 'past_due', 'unpaid', 'trialing')
+				ORDER BY s.created_at DESC
+				LIMIT 1
+			`)
+			.bind(userId, productId)
+			.first<Subscription>();
+		return result || null;
+	}
+
 	async createSubscription(sub: Omit<Subscription, 'created_at' | 'updated_at'>): Promise<void> {
 		await this.db
 			.prepare(

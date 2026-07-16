@@ -4,6 +4,7 @@ import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { verifySession, getSessionToken } from '../lib/auth';
 import { getProductConfigForRequest } from '../lib/product-config';
+import type { ProductConfig } from '../lib/product-config';
 import { errorResponse, jsonResponse } from '../lib/utils';
 
 const billingRoutes = new Hono<AppContext>();
@@ -26,6 +27,13 @@ const SECURITY_AUDIT_ASSETS: Record<string, { key: string; filename: string; con
     contentType: 'text/markdown; charset=utf-8',
   },
 };
+
+export function getCheckoutReturnUrls(productConfig: ProductConfig) {
+  return {
+    successUrl: `${productConfig.frontendUrl}${productConfig.checkoutSuccessPath}`,
+    cancelUrl: `${productConfig.frontendUrl}${productConfig.checkoutCancelPath}`,
+  };
+}
 
 async function authMiddleware(c: any, next: any) {
   // 优先检查 Internal API Key（服务间调用）
@@ -85,8 +93,8 @@ billingRoutes.post('/checkout', async (c) => {
   if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
 
   const body = await c.req
-    .json<{ plan_id?: string; success_url?: string; cancel_url?: string }>()
-    .catch((): { plan_id?: string; success_url?: string; cancel_url?: string } => ({}));
+    .json<{ plan_id?: string }>()
+    .catch((): { plan_id?: string } => ({}));
   const planId = body.plan_id;
   if (!planId) return errorResponse('plan_id is required', 400);
 
@@ -104,7 +112,7 @@ billingRoutes.post('/checkout', async (c) => {
 
   const isSubscription = plan.interval === 'month' || plan.interval === 'year';
   if (isSubscription) {
-    const existingSubscription = await db.getActiveSubscriptionForProduct(userId, plan.product_id);
+    const existingSubscription = await db.getBlockingSubscriptionForProduct(userId, plan.product_id);
     if (existingSubscription) {
       return errorResponse('An active subscription already exists for this product', 409, 'SUBSCRIPTION_ALREADY_ACTIVE');
     }
@@ -137,13 +145,14 @@ billingRoutes.post('/checkout', async (c) => {
     quantity: 1,
   };
 
+  const returnUrls = getCheckoutReturnUrls(productConfig);
   const sessionConfig: Stripe.Checkout.SessionCreateParams = {
     customer: customerId,
     mode,
     payment_method_types: ['card'],
     line_items: [lineItem],
-    success_url: body.success_url || `${productConfig.frontendUrl}${productConfig.checkoutSuccessPath}`,
-    cancel_url: body.cancel_url || `${productConfig.frontendUrl}${productConfig.checkoutCancelPath}`,
+    success_url: returnUrls.successUrl,
+    cancel_url: returnUrls.cancelUrl,
     metadata: { user_id: userId, plan_id: plan.id, product_id: plan.product_id },
   };
 

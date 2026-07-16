@@ -1,6 +1,8 @@
 import { env, SELF } from "cloudflare:test";
 import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
+import { getCheckoutReturnUrls } from "../src/routes/billing";
+import { getProductConfigForHost } from "../src/lib/product-config";
 
 async function createBillingTables() {
 	await env.DB.batch([
@@ -25,6 +27,24 @@ async function createBillingTables() {
 			is_active INTEGER DEFAULT 1
 		)`),
 	]);
+}
+
+async function createSubscriptionTables() {
+	await createBillingTables();
+	await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		stripe_customer_id TEXT,
+		stripe_subscription_id TEXT UNIQUE,
+		plan_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		current_period_start INTEGER,
+		current_period_end INTEGER,
+		cancel_at_period_end INTEGER DEFAULT 0,
+		credits_allocated INTEGER DEFAULT 0,
+		created_at INTEGER DEFAULT (unixepoch()),
+		updated_at INTEGER DEFAULT (unixepoch())
+	)`).run();
 }
 
 async function createWebhookTable() {
@@ -87,6 +107,83 @@ describe("EditImages branded auth and billing", () => {
 
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({ plans: [] });
+	});
+
+	it("returns the production plan field contract for EditImages", async () => {
+		await createBillingTables();
+		await env.DB.batch([
+			env.DB.prepare(`INSERT OR REPLACE INTO products (id, name, slug, description, is_active)
+				VALUES ('prod_editimages', 'EditImages', 'editimages', 'Image tools', 1)`),
+			env.DB.prepare(`INSERT OR REPLACE INTO plans (
+				id, product_id, name, stripe_price_id, billing_interval, price_cents, credits_allocated, is_active
+			) VALUES ('editimages-seller-monthly', 'prod_editimages', 'Seller', 'price_test_seller', 'month', 900, 100, 1)`),
+		]);
+
+		const response = await SELF.fetch("http://auth.editimages.app/api/billing/plans");
+		const body = await response.json() as { plans: Array<Record<string, unknown>> };
+		expect(response.status).toBe(200);
+		expect(body.plans).toContainEqual(expect.objectContaining({
+			id: "editimages-seller-monthly",
+			billing_interval: "month",
+			credits_allocated: 100,
+		}));
+	});
+
+	it("selects fixed EditImages checkout redirects instead of client URLs", () => {
+		const config = getProductConfigForHost("auth.editimages.app");
+		expect(config).not.toBeNull();
+		expect(getCheckoutReturnUrls(config!)).toEqual({
+			successUrl: "https://editimages.app/account/?checkout=success",
+			cancelUrl: "https://editimages.app/account/?checkout=canceled",
+		});
+		const redirects = Object.values(getCheckoutReturnUrls(config!));
+		expect(redirects).not.toContain("https://attacker.example/success");
+		expect(redirects).not.toContain("https://attacker.example/cancel");
+	});
+
+	it("distinguishes active, trialing, past-due, canceled, and ended subscriptions", async () => {
+		await createSubscriptionTables();
+		const userId = `user_${crypto.randomUUID()}`;
+		await env.DB.batch([
+			env.DB.prepare(`INSERT OR REPLACE INTO products (id, name, slug, description, is_active)
+				VALUES ('prod_editimages', 'EditImages', 'editimages', 'Image tools', 1)`),
+			env.DB.prepare(`INSERT OR REPLACE INTO plans (
+				id, product_id, name, stripe_price_id, billing_interval, price_cents, credits_allocated, is_active
+			) VALUES ('editimages-seller-monthly', 'prod_editimages', 'Seller', 'price_test_seller', 'month', 900, 100, 1)`),
+		]);
+		const db = new (await import('../src/lib/db')).DbClient(env.DB);
+		const insertSubscription = async (status: string, createdAt: number, currentPeriodEnd: number | null = null) => {
+			await env.DB.prepare(`INSERT INTO subscriptions (
+				id, user_id, plan_id, status, current_period_end, created_at
+			) VALUES (?, ?, 'editimages-seller-monthly', ?, ?, ?)`)
+				.bind(crypto.randomUUID(), userId, status, currentPeriodEnd, createdAt)
+				.run();
+		};
+
+		for (const [status, createdAt] of [["active", 100], ["trialing", 200], ["past_due", 300]] as const) {
+			await insertSubscription(status, createdAt);
+			expect(await db.getLatestSubscriptionForProduct(userId, 'prod_editimages')).toMatchObject({ status });
+			expect(await db.getBlockingSubscriptionForProduct(userId, 'prod_editimages')).toMatchObject({ status });
+		}
+
+		await insertSubscription("canceled", 400, 500);
+		expect(await db.getLatestSubscriptionForProduct(userId, 'prod_editimages')).toMatchObject({
+			status: 'canceled',
+			current_period_end: 500,
+		});
+		expect(await db.getBlockingSubscriptionForProduct(userId, 'prod_editimages')).toMatchObject({ status: 'past_due' });
+
+		const endedUserId = `user_${crypto.randomUUID()}`;
+		await env.DB.prepare(`INSERT INTO subscriptions (
+			id, user_id, plan_id, status, current_period_end, created_at
+		) VALUES (?, ?, 'editimages-seller-monthly', 'canceled', 100, 500)`)
+			.bind(crypto.randomUUID(), endedUserId)
+			.run();
+		expect(await db.getLatestSubscriptionForProduct(endedUserId, 'prod_editimages')).toMatchObject({
+			status: 'canceled',
+			current_period_end: 100,
+		});
+		expect(await db.getBlockingSubscriptionForProduct(endedUserId, 'prod_editimages')).toBeNull();
 	});
 
 	it("rejects invalid Stripe webhook signatures", async () => {
