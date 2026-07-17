@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
 import { getCheckoutReturnUrls } from "../src/routes/billing";
 import { getProductConfigForHost } from "../src/lib/product-config";
+import { detectImageType } from "../src/routes/images";
 
 async function createBillingTables() {
 	await env.DB.batch([
@@ -244,6 +245,17 @@ describe("EditImages branded auth and billing", () => {
 		expect(await db.refundProductCreditReservation(userId, 'prod_editimages', successfulReference)).toMatchObject({ alreadyProcessed: false, balance: 1 });
 		expect(await db.refundProductCreditReservation(userId, 'prod_editimages', successfulReference)).toMatchObject({ alreadyProcessed: true, balance: 1 });
 		expect((await db.getCredits(userId))?.balance).toBe(2);
+	});
+
+	it("classifies AI output bytes as jpeg, png, or webp and rejects other payloads", () => {
+		const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+		const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+		const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]);
+		expect(detectImageType(jpeg)).toBe("image/jpeg");
+		expect(detectImageType(png)).toBe("image/png");
+		expect(detectImageType(webp)).toBe("image/webp");
+		expect(detectImageType(new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b]))).toBeNull();
+		expect(detectImageType(new Uint8Array([0xff, 0xd8, 0xff]))).toBeNull();
 	});
 
 	it("fails closed for unknown hosts and ignores spoofed forwarded product hosts", async () => {
