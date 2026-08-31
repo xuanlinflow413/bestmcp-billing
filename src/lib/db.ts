@@ -219,7 +219,7 @@ export class DbClient {
 			this.db.prepare(`
 				INSERT INTO product_credit_ledger
 					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
-				SELECT ?, ?, ?, 'usage', ?, balance, 'AI image edit reservation', ?, ?, NULL, unixepoch()
+				SELECT ?, ?, ?, 'usage', ?, balance, 'AI image reservation', ?, ?, NULL, unixepoch()
 				FROM product_credit_balances
 				WHERE user_id = ? AND product_id = ? AND changes() = 1
 			`).bind(crypto.randomUUID(), userId, productId, -amount, referenceId, `reserve:${idempotencyKey}`, userId, productId),
@@ -248,7 +248,11 @@ export class DbClient {
 		const result = await this.db.prepare(
 			"UPDATE product_credit_reservations SET status = 'completed', updated_at = unixepoch() WHERE user_id = ? AND product_id = ? AND reference_id = ? AND status = 'pending'"
 		).bind(userId, productId, referenceId).run();
-		return result.success && (result.meta?.changes ?? 0) === 1;
+		if (result.success && (result.meta?.changes ?? 0) === 1) return true;
+		const reservation = await this.db.prepare(
+			'SELECT status FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND reference_id = ?'
+		).bind(userId, productId, referenceId).first<{ status: string }>();
+		return reservation?.status === 'completed';
 	}
 
 	async refundProductCreditReservation(userId: string, productId: string, referenceId: string): Promise<{ alreadyProcessed: boolean; balance: number } | null> {
@@ -271,7 +275,7 @@ export class DbClient {
 			this.db.prepare(`
 				INSERT INTO product_credit_ledger
 					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
-				SELECT ?, ?, ?, 'refund', ?, balance, 'AI image edit refund', ?, ?, NULL, unixepoch()
+				SELECT ?, ?, ?, 'refund', ?, balance, 'AI image refund', ?, ?, NULL, unixepoch()
 				FROM product_credit_balances
 				WHERE user_id = ? AND product_id = ? AND changes() = 1
 			`).bind(crypto.randomUUID(), userId, productId, existing.amount, `refund:${referenceId}`, `refund:${referenceId}`, userId, productId),

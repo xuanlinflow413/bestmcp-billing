@@ -166,6 +166,6 @@ export function requiresProductCreditsV2(productId: string): boolean {
 
 export function getInitialProductCredits(productId: string): number {
   if (productId === 'prod_editimages') return 2;
-  if (productId === 'prod_skuangles') return 3;
+  if (productId === 'prod_skuangles') return 1;
   return 0;
 }
