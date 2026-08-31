@@ -18,6 +18,10 @@
 		{
 			"pattern": "auth.editimages.app",
 			"custom_domain": true
+		},
+		{
+			"pattern": "auth.skuangles.com",
+			"custom_domain": true
 		}
 	],
 	"d1_databases": [
@@ -89,6 +93,6 @@
 		"FRONTEND_URL": "https://bestmcpservers.com",
 		"API_URL": "https://auth.bestmcpservers.com",
 		"GOOGLE_OAUTH_REDIRECT_URI": "https://auth.bestmcpservers.com/api/auth/google/callback",
-		"PRODUCT_CREDITS_V2_PRODUCTS": "prod_editimages"
+		"PRODUCT_CREDITS_V2_PRODUCTS": "prod_editimages,prod_skuangles"
 	}
 }

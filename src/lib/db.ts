@@ -219,7 +219,7 @@ export class DbClient {
 			this.db.prepare(`
 				INSERT INTO product_credit_ledger
 					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
-				SELECT ?, ?, ?, 'usage', ?, balance, 'AI image edit reservation', ?, ?, NULL, unixepoch()
+				SELECT ?, ?, ?, 'usage', ?, balance, 'AI image reservation', ?, ?, NULL, unixepoch()
 				FROM product_credit_balances
 				WHERE user_id = ? AND product_id = ? AND changes() = 1
 			`).bind(crypto.randomUUID(), userId, productId, -amount, referenceId, `reserve:${idempotencyKey}`, userId, productId),
@@ -248,7 +248,11 @@ export class DbClient {
 		const result = await this.db.prepare(
 			"UPDATE product_credit_reservations SET status = 'completed', updated_at = unixepoch() WHERE user_id = ? AND product_id = ? AND reference_id = ? AND status = 'pending'"
 		).bind(userId, productId, referenceId).run();
-		return result.success && (result.meta?.changes ?? 0) === 1;
+		if (result.success && (result.meta?.changes ?? 0) === 1) return true;
+		const reservation = await this.db.prepare(
+			'SELECT status FROM product_credit_reservations WHERE user_id = ? AND product_id = ? AND reference_id = ?'
+		).bind(userId, productId, referenceId).first<{ status: string }>();
+		return reservation?.status === 'completed';
 	}
 
 	async refundProductCreditReservation(userId: string, productId: string, referenceId: string): Promise<{ alreadyProcessed: boolean; balance: number } | null> {
@@ -271,7 +275,7 @@ export class DbClient {
 			this.db.prepare(`
 				INSERT INTO product_credit_ledger
 					(id, user_id, product_id, type, amount, balance_after, description, reference_id, idempotency_key, metadata, created_at)
-				SELECT ?, ?, ?, 'refund', ?, balance, 'AI image edit refund', ?, ?, NULL, unixepoch()
+				SELECT ?, ?, ?, 'refund', ?, balance, 'AI image refund', ?, ?, NULL, unixepoch()
 				FROM product_credit_balances
 				WHERE user_id = ? AND product_id = ? AND changes() = 1
 			`).bind(crypto.randomUUID(), userId, productId, existing.amount, `refund:${referenceId}`, `refund:${referenceId}`, userId, productId),
@@ -718,14 +722,28 @@ export class DbClient {
 		return result || null;
 	}
 
-	async createWebhookEvent(event: { id: string; stripe_event_id: string; event_type: string; payload: string }): Promise<void> {
-		await this.db
+	async createWebhookEvent(event: { id: string; stripe_event_id: string; event_type: string; payload: string }): Promise<boolean> {
+		const result = await this.db
 			.prepare(
 				`INSERT INTO webhook_events (id, stripe_event_id, event_type, payload, status, created_at)
-				 VALUES (?, ?, ?, ?, 'pending', unixepoch())`
+				 VALUES (?, ?, ?, ?, 'pending', unixepoch())
+				 ON CONFLICT(stripe_event_id) DO NOTHING`
 			)
 			.bind(event.id, event.stripe_event_id, event.event_type, event.payload)
 			.run();
+		return (result.meta?.changes ?? 0) > 0;
+	}
+
+	async retryFailedWebhookEvent(id: string, eventType: string, payload: string): Promise<boolean> {
+		const result = await this.db
+			.prepare(
+				`UPDATE webhook_events
+				 SET event_type = ?, payload = ?, status = 'pending', processing_error = NULL, processed_at = NULL
+				 WHERE id = ? AND status = 'failed'`
+			)
+			.bind(eventType, payload, id)
+			.run();
+		return (result.meta?.changes ?? 0) > 0;
 	}
 
 	async markWebhookProcessed(id: string, status: 'processed' | 'failed' | 'ignored', error?: string): Promise<void> {

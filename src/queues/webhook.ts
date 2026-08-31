@@ -1,6 +1,7 @@
 import type { MessageBatch } from '@cloudflare/workers-types';
 import Stripe from 'stripe';
 import { DbClient } from '../lib/db';
+import { usesProductCreditsV2 } from '../lib/product-config';
 import type { Env } from '../types';
 
 interface WebhookMessage {
@@ -103,7 +104,7 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
               if (plan) {
                 const purchaseCreated = await db.createPurchase(userId, plan.id, session.id);
                 if (plan.credits_per_period > 0) {
-                  if (plan.product_id === 'prod_editimages') {
+                  if (usesProductCreditsV2(plan.product_id, env)) {
                     await db.addProductCredits(userId, plan.product_id, plan.credits_per_period, 'purchase', `One-time purchase: ${plan.name}`, session.id);
                   } else {
                     await db.addCredits(userId, plan.credits_per_period, 'purchase', `One-time purchase: ${plan.name}`, session.id, getProductSlug(plan.product_id) || undefined);
@@ -138,7 +139,7 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
             const sub = await db.getSubscriptionByStripeId(subscription.id);
             if (sub && plan) {
               // 幂等：使用 invoice.id 作为 reference_id
-              const result = plan.product_id === 'prod_editimages'
+              const result = usesProductCreditsV2(plan.product_id, env)
                 ? await db.addProductCredits(sub.user_id, plan.product_id, plan.credits_per_period, 'subscription_grant', `Subscription payment: ${plan.name}`, invoice.id)
                 : await db.addCredits(sub.user_id, plan.credits_per_period, 'subscription_grant', `Subscription payment: ${plan.name}`, invoice.id, getProductSlug(plan.product_id) || undefined);
               if (result) {

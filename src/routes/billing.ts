@@ -204,6 +204,9 @@ billingRoutes.post('/portal', async (c) => {
   if (!userId) return errorResponse('Unauthorized', 401);
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  if (productConfig.productId === 'prod_skuangles') {
+    return errorResponse('Billing history is unavailable for this product', 404, 'BILLING_HISTORY_UNAVAILABLE');
+  }
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(userId);
@@ -229,6 +232,11 @@ billingRoutes.post('/portal', async (c) => {
 billingRoutes.get('/invoices', async (c) => {
   const userId = c.get('userId');
   if (!userId) return errorResponse('Unauthorized', 401);
+  const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
+  if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
+  if (productConfig.productId === 'prod_skuangles') {
+    return errorResponse('Billing history is unavailable for this product', 404, 'BILLING_HISTORY_UNAVAILABLE');
+  }
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(userId);

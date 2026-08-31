@@ -2,7 +2,13 @@ import { Hono } from 'hono';
 import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { createSession, destroySession, getSessionToken, verifySession } from '../lib/auth';
-import { getProductConfigForRequest, getProductConfigForReturnUrl, usesProductCreditsV2 } from '../lib/product-config';
+import {
+  getInitialProductCredits,
+  getProductConfigForRequest,
+  getProductConfigForReturnUrl,
+  requiresProductCreditsV2,
+  usesProductCreditsV2,
+} from '../lib/product-config';
 import { errorResponse, generateUUID, jsonResponse, now, setCookie, clearCookie } from '../lib/utils';
 
 const authRoutes = new Hono<AppContext>();
@@ -21,6 +27,8 @@ const ALLOWED_RETURN_HOSTS = [
   'www.cleartextdetector.com',
   'editimages.app',
   'www.editimages.app',
+  'skuangles.com',
+  'www.skuangles.com',
 ];
 
 const ALLOWED_RETURN_HOST_SUFFIXES = [
@@ -414,11 +422,15 @@ authRoutes.get('/session', async (c) => {
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
-  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) {
+  if (requiresProductCreditsV2(productConfig.productId) && !productCreditsV2) {
     return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
   }
   const credits = productCreditsV2
-    ? await db.ensureProductCredits(payload.userId, productConfig.productId, 2)
+    ? await db.ensureProductCredits(
+      payload.userId,
+      productConfig.productId,
+      getInitialProductCredits(productConfig.productId),
+    )
     : await db.getCredits(payload.userId);
   const subscription = await db.getLatestSubscriptionForProduct(payload.userId, productConfig.productId);
   const purchases = await db.getActivePurchasesForProduct(payload.userId, productConfig.productId);

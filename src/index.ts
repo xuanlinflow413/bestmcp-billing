@@ -27,6 +27,8 @@ app.use('*', cors({
       'https://www.cleartextdetector.com',
       'https://editimages.app',
       'https://www.editimages.app',
+      'https://skuangles.com',
+      'https://www.skuangles.com',
       'http://localhost:3000',
       'http://localhost:3001',
     ];

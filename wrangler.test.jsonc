@@ -34,6 +34,8 @@
     "FRONTEND_URL": "http://example.test",
     "API_URL": "http://example.test",
     "GOOGLE_OAUTH_REDIRECT_URI": "http://example.test/api/auth/google/callback",
-    "PRODUCT_CREDITS_V2_PRODUCTS": "prod_editimages"
+    "PRODUCT_CREDITS_V2_PRODUCTS": "prod_editimages,prod_skuangles",
+    "JWT_SECRET": "test-only-jwt-secret-for-worker-tests",
+    "INTERNAL_API_KEY": "test-only-internal-key"
   }
 }

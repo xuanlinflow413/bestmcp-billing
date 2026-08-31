@@ -73,39 +73,69 @@ webhookRoutes.post('/replay', async (c) => {
   return await processWebhookEvent(c, event);
 });
 
-async function processWebhookEvent(c: any, event: Stripe.Event) {
+export async function processWebhookEvent(c: any, event: Stripe.Event) {
   const env = c.env;
   const db = new DbClient(env.DB);
+  const payload = JSON.stringify(event);
 
-  // 幂等性检查：已处理过的事件直接返回 200
+  // 只有新事件或 failed -> pending 的原子状态转换能取得入队权。
   const existing = await db.getWebhookEvent(event.id);
   if (existing && existing.status === 'processed') {
     console.log(`Webhook event ${event.id} already processed, skipping`);
     return jsonResponse({ received: true, status: 'already_processed' });
   }
+  if (existing && existing.status === 'ignored') {
+    console.log(`Webhook event ${event.id} already ignored, skipping`);
+    return jsonResponse({ received: true, status: 'already_ignored' });
+  }
+  if (existing && existing.status === 'pending') {
+    console.log(`Webhook event ${event.id} already pending, skipping duplicate enqueue`);
+    return jsonResponse({ received: true, status: 'already_pending' });
+  }
 
-  // 如果存在但处理失败，更新状态为 pending 重新处理
-  if (existing && existing.status !== 'processed') {
-    console.log(`Webhook event ${event.id} exists but not processed, re-queueing`);
+  let webhookEventId: string;
+  let queueStatus: 'queued' | 'requeued';
+  let claimed: boolean;
+
+  if (existing && existing.status === 'failed') {
+    webhookEventId = existing.id;
+    queueStatus = 'requeued';
+    claimed = await db.retryFailedWebhookEvent(existing.id, event.type, payload);
   } else {
-    // 写入 D1
-    await db.createWebhookEvent({
-      id: crypto.randomUUID(),
+    webhookEventId = crypto.randomUUID();
+    queueStatus = 'queued';
+    claimed = await db.createWebhookEvent({
+      id: webhookEventId,
       stripe_event_id: event.id,
       event_type: event.type,
-      payload: JSON.stringify(event),
+      payload,
     });
   }
 
-  // 发送 Queue 异步处理
-  await env.QUEUE_WEBHOOK.send({
-    eventId: event.id,
-    type: event.type,
-    data: event.data.object,
-    timestamp: Date.now(),
-  });
+  if (!claimed) {
+    const concurrent = await db.getWebhookEvent(event.id);
+    const status = concurrent?.status === 'processed'
+      ? 'already_processed'
+      : concurrent?.status === 'ignored'
+        ? 'already_ignored'
+        : 'already_pending';
+    console.log(`Webhook event ${event.id} was claimed concurrently, skipping duplicate enqueue`);
+    return jsonResponse({ received: true, status });
+  }
 
-  return jsonResponse({ received: true, replayed: true });
+  try {
+    await env.QUEUE_WEBHOOK.send({
+      eventId: event.id,
+      type: event.type,
+      data: event.data.object,
+      timestamp: Date.now(),
+    });
+  } catch (err: any) {
+    await db.markWebhookProcessed(webhookEventId, 'failed', err?.message || 'Queue enqueue failed');
+    throw err;
+  }
+
+  return jsonResponse({ received: true, replayed: true, status: queueStatus });
 }
 
 export { webhookRoutes };
