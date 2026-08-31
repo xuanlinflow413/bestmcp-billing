@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { Env } from './types';
 import { authRoutes } from './routes/auth';
 import { creditsRoutes } from './routes/credits';
@@ -11,6 +12,10 @@ import { imageRoutes } from './routes/images';
 import { handleWebhookQueue } from './queues/webhook';
 import { handleAuditQueue } from './queues/audit';
 import { handleCreditsQueue } from './queues/credits';
+import {
+  asSkuanglesServiceRequest,
+  isAllowedSkuanglesServiceRequest,
+} from './lib/skuangles-service';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -64,6 +69,16 @@ app.onError((err, c) => {
   console.error('Unhandled error:', err);
   return c.json({ error: 'Internal Server Error', message: err.message }, 500);
 });
+
+export class SkuanglesAccountService extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    if (!isAllowedSkuanglesServiceRequest(request)) {
+      return Response.json({ error: 'Not Found' }, { status: 404 });
+    }
+
+    return app.fetch(await asSkuanglesServiceRequest(request), this.env, this.ctx);
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
