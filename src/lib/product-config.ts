@@ -55,6 +55,17 @@ const EDITIMAGES_CONFIG: ProductConfig = {
   portalReturnPath: '/account/',
 };
 
+const SKUANGLES_CONFIG: ProductConfig = {
+  productId: 'prod_skuangles',
+  appUrl: 'https://skuangles.com',
+  frontendUrl: 'https://skuangles.com',
+  oauthRedirectUri: 'https://auth.skuangles.com/api/auth/google/callback',
+  defaultReturnPath: '/account/',
+  checkoutSuccessPath: '/account/?checkout=success',
+  checkoutCancelPath: '/pricing/?checkout=canceled',
+  portalReturnPath: '/account/',
+};
+
 function getRequestHost(requestUrl: string): string {
   try {
     return new URL(requestUrl).host;
@@ -105,6 +116,14 @@ export function getProductConfigForHost(host: string): ProductConfig | null {
     return EDITIMAGES_CONFIG;
   }
 
+  if (
+    normalizedHost === 'skuangles.com'
+    || normalizedHost === 'www.skuangles.com'
+    || normalizedHost === 'auth.skuangles.com'
+  ) {
+    return SKUANGLES_CONFIG;
+  }
+
   return null;
 }
 
@@ -139,4 +158,14 @@ export function usesProductCreditsV2(productId: string, env: AppContext['Binding
 	.map((value) => value.trim())
 	.filter(Boolean);
   return enabledProducts.includes(productId);
+}
+
+export function requiresProductCreditsV2(productId: string): boolean {
+  return productId === 'prod_editimages' || productId === 'prod_skuangles';
+}
+
+export function getInitialProductCredits(productId: string): number {
+  if (productId === 'prod_editimages') return 2;
+  if (productId === 'prod_skuangles') return 3;
+  return 0;
 }

@@ -5,7 +5,12 @@ import type { AppContext } from '../types';
 import { DbClient } from '../lib/db';
 import { verifySession, getSessionToken } from '../lib/auth';
 import { errorResponse, jsonResponse } from '../lib/utils';
-import { getProductConfigForRequest, usesProductCreditsV2 } from '../lib/product-config';
+import {
+  getInitialProductCredits,
+  getProductConfigForRequest,
+  requiresProductCreditsV2,
+  usesProductCreditsV2,
+} from '../lib/product-config';
 
 const creditsRoutes = new Hono<AppContext>();
 
@@ -67,8 +72,10 @@ creditsRoutes.get('/', async (c) => {
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
-  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
-  const credits = productCreditsV2 ? await db.ensureProductCredits(userId, productConfig.productId, 2) : await db.getCredits(userId);
+  if (requiresProductCreditsV2(productConfig.productId) && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  const credits = productCreditsV2
+    ? await db.ensureProductCredits(userId, productConfig.productId, getInitialProductCredits(productConfig.productId))
+    : await db.getCredits(userId);
 
   if (!credits) {
     return jsonResponse({ balance: 0, lifetime_used: 0, lifetime_purchased: 0 });
@@ -95,7 +102,7 @@ creditsRoutes.get('/transactions', async (c) => {
   const productConfig = getProductConfigForRequest(c.req.url, c.req.header('X-Forwarded-Host'));
   if (!productConfig) return errorResponse('Unknown product host', 404, 'PRODUCT_HOST_UNKNOWN');
   const productCreditsV2 = usesProductCreditsV2(productConfig.productId, c.env);
-  if (productConfig.productId === 'prod_editimages' && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
+  if (requiresProductCreditsV2(productConfig.productId) && !productCreditsV2) return errorResponse('Credits are temporarily unavailable', 503, 'PRODUCT_CREDITS_DISABLED');
   const transactions = productCreditsV2 ? await db.getProductCreditTransactions(userId, productConfig.productId, limit, offset) : await db.getCreditTransactions(userId, limit, offset);
 
   return jsonResponse({ transactions });
