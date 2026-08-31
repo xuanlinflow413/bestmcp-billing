@@ -718,14 +718,28 @@ export class DbClient {
 		return result || null;
 	}
 
-	async createWebhookEvent(event: { id: string; stripe_event_id: string; event_type: string; payload: string }): Promise<void> {
-		await this.db
+	async createWebhookEvent(event: { id: string; stripe_event_id: string; event_type: string; payload: string }): Promise<boolean> {
+		const result = await this.db
 			.prepare(
 				`INSERT INTO webhook_events (id, stripe_event_id, event_type, payload, status, created_at)
-				 VALUES (?, ?, ?, ?, 'pending', unixepoch())`
+				 VALUES (?, ?, ?, ?, 'pending', unixepoch())
+				 ON CONFLICT(stripe_event_id) DO NOTHING`
 			)
 			.bind(event.id, event.stripe_event_id, event.event_type, event.payload)
 			.run();
+		return (result.meta?.changes ?? 0) > 0;
+	}
+
+	async retryFailedWebhookEvent(id: string, eventType: string, payload: string): Promise<boolean> {
+		const result = await this.db
+			.prepare(
+				`UPDATE webhook_events
+				 SET event_type = ?, payload = ?, status = 'pending', processing_error = NULL, processed_at = NULL
+				 WHERE id = ? AND status = 'failed'`
+			)
+			.bind(eventType, payload, id)
+			.run();
+		return (result.meta?.changes ?? 0) > 0;
 	}
 
 	async markWebhookProcessed(id: string, status: 'processed' | 'failed' | 'ignored', error?: string): Promise<void> {
