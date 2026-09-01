@@ -1,5 +1,6 @@
 import type { MessageBatch } from '@cloudflare/workers-types';
 import { DbClient } from '../lib/db';
+import { requiresProductCreditsV2, usesProductCreditsV2 } from '../lib/product-config';
 import type { Env } from '../types';
 
 interface CreditsMessage {
@@ -23,15 +24,17 @@ export async function handleCreditsQueue(batch: MessageBatch<CreditsMessage>, en
         case 'monthly_reset': {
           // 为所有 active 订阅用户重置月度 Credits
           const { results } = await env.DB.prepare(
-            `SELECT s.user_id, s.credits_allocated, p.credits_allocated as plan_credits, p.product_id
+            `SELECT s.user_id, p.credits_allocated as plan_credits, p.product_id
              FROM subscriptions s
              JOIN plans p ON s.plan_id = p.id
-             WHERE s.status = 'active' AND s.cancel_at_period_end = 0`
-          ).all<{ user_id: string; credits_allocated: number; plan_credits: number; product_id: string }>();
+             WHERE s.status = 'active'
+               AND s.cancel_at_period_end = 0
+               AND s.stripe_subscription_id IS NULL`
+          ).all<{ user_id: string; plan_credits: number; product_id: string }>();
 
           for (const row of results || []) {
             const referenceId = `monthly:${row.product_id}:${row.user_id}:${new Date(message.body.timestamp).toISOString().slice(0, 7)}`;
-            if (row.product_id === 'prod_editimages') {
+            if (requiresProductCreditsV2(row.product_id) || usesProductCreditsV2(row.product_id, env)) {
               await db.addProductCredits(row.user_id, row.product_id, row.plan_credits, 'subscription_grant', 'Monthly credits reset', referenceId);
             } else {
               await db.addCredits(row.user_id, row.plan_credits, 'subscription_grant', 'Monthly credits reset', referenceId);

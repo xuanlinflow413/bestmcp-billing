@@ -444,13 +444,43 @@ export class DbClient {
 	}
 
 	async addCredits(userId: string, amount: number, type: CreditTransaction['type'], description: string, referenceId?: string, product?: string): Promise<Credits | null> {
-		// 幂等性检查：如果 reference_id 已存在，跳过
 		if (referenceId) {
-			const existingTx = await this.getCreditTransactionByReference(referenceId);
-			if (existingTx) {
-				console.log(`[addCredits] Skipped duplicate: reference_id=${referenceId} already exists (tx_id=${existingTx.id})`);
+			const results = await this.db.batch([
+				this.db.prepare(`
+					INSERT OR IGNORE INTO credits
+						(id, user_id, balance, lifetime_purchased, lifetime_used, updated_at)
+					VALUES (?, ?, 0, 0, 0, unixepoch())
+				`).bind(crypto.randomUUID(), userId),
+				this.db.prepare(`
+					INSERT OR IGNORE INTO credit_transactions
+						(id, user_id, type, amount, balance_after, description, reference_id, product, metadata, created_at)
+					SELECT ?, ?, ?, ?, balance + ?, ?, ?, ?, NULL, unixepoch()
+					FROM credits
+					WHERE user_id = ?
+						AND NOT EXISTS (
+							SELECT 1
+							FROM credit_transactions
+							WHERE user_id = ? AND type = ? AND reference_id = ?
+						)
+				`).bind(
+					crypto.randomUUID(), userId, type, amount, amount, description,
+					referenceId, (product as any) || null, userId, userId, type, referenceId,
+				),
+				this.db.prepare(`
+					UPDATE credits
+					SET balance = balance + ?,
+						lifetime_purchased = CASE WHEN ? IN ('purchase', 'subscription_grant') THEN lifetime_purchased + ? ELSE lifetime_purchased END,
+						updated_at = unixepoch()
+					WHERE user_id = ? AND changes() = 1
+				`).bind(amount, type, amount, userId),
+			]);
+
+			if ((results[1]?.meta?.changes ?? 0) === 0) {
+				console.log(`[addCredits] Skipped duplicate: user_id=${userId}, type=${type}, reference_id=${referenceId}`);
 				return null;
 			}
+
+			return this.getCredits(userId);
 		}
 
 		let existingCredits = await this.getCredits(userId);

@@ -23,7 +23,7 @@
       { "binding": "QUEUE_CREDITS", "queue": "bestmcp-billing-credits" }
     ],
     "consumers": [
-      { "queue": "bestmcp-billing-webhooks", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 3 },
+      { "queue": "bestmcp-billing-webhooks", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 3, "max_concurrency": 1 },
       { "queue": "bestmcp-billing-audit", "max_batch_size": 100, "max_batch_timeout": 10, "max_retries": 3 },
       { "queue": "bestmcp-billing-credits", "max_batch_size": 50, "max_batch_timeout": 5, "max_retries": 3 }
     ]

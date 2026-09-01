@@ -110,7 +110,7 @@ describe('SKU Angles shared auth and billing', () => {
     expect(config).toMatchObject({
       productId: 'prod_skuangles',
       appUrl: 'https://skuangles.com',
-      oauthRedirectUri: 'https://auth.skuangles.com/api/auth/google/callback',
+      oauthRedirectUri: 'https://auth.bestmcpservers.com/api/auth/google/callback',
     });
     expect(getCheckoutReturnUrls(config!)).toEqual({
       successUrl: 'https://skuangles.com/account/?checkout=success',
