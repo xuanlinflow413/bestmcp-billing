@@ -59,7 +59,7 @@ const SKUANGLES_CONFIG: ProductConfig = {
   productId: 'prod_skuangles',
   appUrl: 'https://skuangles.com',
   frontendUrl: 'https://skuangles.com',
-  oauthRedirectUri: 'https://auth.skuangles.com/api/auth/google/callback',
+  oauthRedirectUri: 'https://auth.bestmcpservers.com/api/auth/google/callback',
   defaultReturnPath: '/account/',
   checkoutSuccessPath: '/account/?checkout=success',
   checkoutCancelPath: '/pricing/?checkout=canceled',
