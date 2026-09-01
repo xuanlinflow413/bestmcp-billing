@@ -90,13 +90,20 @@ async function getPlanByPriceOrMetadata(
   return planId ? db.getPlanById(planId) : null;
 }
 
-async function resolveCurrentSubscriptionPlan(db: DbClient, subscription: Stripe.Subscription): Promise<Plan | null> {
+async function resolveCurrentSubscriptionPlan(
+  db: DbClient,
+  subscription: Stripe.Subscription,
+): Promise<{ plan: Plan | null; hasConcretePrice: boolean }> {
   const item = getPrimaryItem(subscription);
-  return getPlanByPriceOrMetadata(
-    db,
-    getStripeObjectId(item.price),
-    subscription.metadata?.plan_id || null,
-  );
+  const priceId = getStripeObjectId(item.price);
+  return {
+    plan: await getPlanByPriceOrMetadata(
+      db,
+      priceId,
+      subscription.metadata?.plan_id || null,
+    ),
+    hasConcretePrice: Boolean(priceId),
+  };
 }
 
 async function resolveInvoicePlan(
@@ -243,7 +250,10 @@ async function synchronizeSubscriptionState(
 ): Promise<Subscription | null> {
   const existing = await db.getSubscriptionByStripeId(subscription.id);
   const currentPlan = await resolveCurrentSubscriptionPlan(db, subscription);
-  const plan = currentPlan || (!existing ? fallbackPlan || null : null);
+  if (!existing && currentPlan.hasConcretePrice && !currentPlan.plan) {
+    throw new Error(`Cannot resolve the current price for subscription ${subscription.id}`);
+  }
+  const plan = currentPlan.plan || (!existing && !currentPlan.hasConcretePrice ? fallbackPlan || null : null);
 
   if (plan) {
     const userId = await resolveSubscriptionUserId(env, existing, subscription, invoice);

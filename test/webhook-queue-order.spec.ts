@@ -517,6 +517,115 @@ describe('Stripe webhook queue event ordering', () => {
       WHERE user_id = ?`).bind(userId).first<{ count: number }>()).toEqual({ count: 0 });
   });
 
+  it('fails closed when a delayed mapped invoice arrives after the live subscription moved to an unmapped price', async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `unmapped-current-user-${suffix}`;
+    const oldPlanId = `unmapped-current-old-plan-${suffix}`;
+    const oldPriceId = `price_unmapped_current_old_${suffix}`;
+    const newPriceId = `price_unmapped_current_new_${suffix}`;
+    const customerId = `cus_unmapped_current_${suffix}`;
+    const subscriptionId = `sub_unmapped_current_${suffix}`;
+    const invoiceId = `in_unmapped_current_old_${suffix}`;
+    const oldLine = invoiceSubscriptionLine(oldPriceId, subscriptionId);
+
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO users (id, email, stripe_customer_id)
+        VALUES (?, ?, ?)`).bind(userId, `${userId}@example.test`, customerId),
+      env.DB.prepare(`INSERT OR IGNORE INTO products (id, name, slug)
+        VALUES ('prod_skuangles', 'SKU Angles', 'skuangles')`),
+      env.DB.prepare(`INSERT INTO plans (
+        id, product_id, slug, name, stripe_price_id, billing_interval,
+        price_cents, credits_allocated, is_active
+      ) VALUES (?, 'prod_skuangles', ?, 'Starter', ?, 'month', 1200, 20, 1)`)
+        .bind(oldPlanId, oldPlanId, oldPriceId),
+    ]);
+    stripeMocks.retrieveSubscription.mockResolvedValue(stripeSubscription({
+      subscriptionId,
+      customerId,
+      userId,
+      planId: oldPlanId,
+      productId: 'prod_skuangles',
+      priceId: newPriceId,
+    }));
+    stripeMocks.listInvoiceLineItems.mockResolvedValue({ data: [oldLine] });
+
+    const delayedInvoice = queueMessage(`evt_unmapped_current_${suffix}`, 'invoice.paid', {
+      id: invoiceId,
+      customer: customerId,
+      billing_reason: 'subscription_cycle',
+      lines: { data: [oldLine] },
+      parent: {
+        subscription_details: {
+          subscription: subscriptionId,
+          metadata: {
+            user_id: userId,
+            plan_id: oldPlanId,
+            product_id: 'prod_skuangles',
+          },
+        },
+      },
+    });
+    await handleWebhookQueue({ messages: [delayedInvoice.message] } as any, testEnv());
+
+    expect(delayedInvoice.ack).not.toHaveBeenCalled();
+    expect(delayedInvoice.retry).toHaveBeenCalledOnce();
+    expect(await env.DB.prepare(`SELECT COUNT(*) AS count FROM subscriptions
+      WHERE stripe_subscription_id = ?`).bind(subscriptionId).first<{ count: number }>()).toEqual({ count: 0 });
+    expect(await env.DB.prepare(`SELECT COUNT(*) AS count FROM product_credit_ledger
+      WHERE user_id = ? AND reference_id = ?`)
+      .bind(userId, invoiceId).first<{ count: number }>()).toEqual({ count: 0 });
+  });
+
+  it('syncs a canceled status for an existing subscription even when its live price is unmapped', async () => {
+    const suffix = crypto.randomUUID();
+    const userId = `unmapped-canceled-user-${suffix}`;
+    const oldPlanId = `unmapped-canceled-old-plan-${suffix}`;
+    const oldPriceId = `price_unmapped_canceled_old_${suffix}`;
+    const newPriceId = `price_unmapped_canceled_new_${suffix}`;
+    const customerId = `cus_unmapped_canceled_${suffix}`;
+    const subscriptionId = `sub_unmapped_canceled_${suffix}`;
+
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO users (id, email, stripe_customer_id)
+        VALUES (?, ?, ?)`).bind(userId, `${userId}@example.test`, customerId),
+      env.DB.prepare(`INSERT OR IGNORE INTO products (id, name, slug)
+        VALUES ('prod_skuangles', 'SKU Angles', 'skuangles')`),
+      env.DB.prepare(`INSERT INTO plans (
+        id, product_id, slug, name, stripe_price_id, billing_interval,
+        price_cents, credits_allocated, is_active
+      ) VALUES (?, 'prod_skuangles', ?, 'Starter', ?, 'month', 1200, 20, 1)`)
+        .bind(oldPlanId, oldPlanId, oldPriceId),
+      env.DB.prepare(`INSERT INTO subscriptions (
+        id, user_id, stripe_customer_id, stripe_subscription_id,
+        plan_id, status, current_period_start, current_period_end
+      ) VALUES (?, ?, ?, ?, ?, 'active', 1800000000, 1802678400)`)
+        .bind(crypto.randomUUID(), userId, customerId, subscriptionId, oldPlanId),
+    ]);
+    const current = {
+      ...stripeSubscription({
+        subscriptionId,
+        customerId,
+        userId,
+        planId: oldPlanId,
+        productId: 'prod_skuangles',
+        priceId: newPriceId,
+      }),
+      status: 'canceled',
+    };
+    stripeMocks.retrieveSubscription.mockResolvedValue(current);
+
+    const deleted = queueMessage(`evt_unmapped_canceled_${suffix}`, 'customer.subscription.deleted', current);
+    await handleWebhookQueue({ messages: [deleted.message] } as any, testEnv());
+
+    expect(deleted.ack).toHaveBeenCalledOnce();
+    expect(deleted.retry).not.toHaveBeenCalled();
+    expect(await env.DB.prepare(`SELECT plan_id, status FROM subscriptions
+      WHERE stripe_subscription_id = ?`).bind(subscriptionId).first()).toEqual({
+      plan_id: oldPlanId,
+      status: 'canceled',
+    });
+  });
+
   it('keeps a canceled subscription canceled when a stale subscription.updated event arrives', async () => {
     const suffix = crypto.randomUUID();
     const userId = `stale-update-user-${suffix}`;
