@@ -1,0 +1,69 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bestmcp-billing-skuangles-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-07",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public" },
+  "observability": { "enabled": true },
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bestmcp-billing-skuangles-sandbox-db",
+      "database_id": "<D1_DATABASE_ID>",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "kv_namespaces": [
+    { "binding": "KV_SESSIONS", "id": "<KV_SESSIONS_NAMESPACE_ID>" },
+    { "binding": "KV_RATELIMIT", "id": "<KV_RATELIMIT_NAMESPACE_ID>" },
+    { "binding": "KV_CACHE", "id": "<KV_CACHE_NAMESPACE_ID>" }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2_STORAGE",
+      "bucket_name": "bestmcp-billing-skuangles-sandbox-assets"
+    }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "QUEUE_WEBHOOK", "queue": "bestmcp-billing-skuangles-sandbox-webhooks" },
+      { "binding": "QUEUE_AUDIT", "queue": "bestmcp-billing-skuangles-sandbox-audit" },
+      { "binding": "QUEUE_CREDITS", "queue": "bestmcp-billing-skuangles-sandbox-credits" }
+    ],
+    "consumers": [
+      {
+        "queue": "bestmcp-billing-skuangles-sandbox-webhooks",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 1
+      },
+      {
+        "queue": "bestmcp-billing-skuangles-sandbox-audit",
+        "max_batch_size": 100,
+        "max_batch_timeout": 10,
+        "max_retries": 3
+      },
+      {
+        "queue": "bestmcp-billing-skuangles-sandbox-credits",
+        "max_batch_size": 50,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
+  },
+  "vars": {
+    "APP_ENV": "sandbox",
+    "APP_URL": "https://bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev",
+    "FRONTEND_URL": "https://bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev",
+    "API_URL": "https://bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev",
+    "GOOGLE_OAUTH_REDIRECT_URI": "https://bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev/api/auth/google/callback",
+    "PRODUCT_CREDITS_V2_PRODUCTS": "prod_skuangles",
+    "WEBHOOK_QUEUE_NAME": "bestmcp-billing-skuangles-sandbox-webhooks",
+    "AUDIT_QUEUE_NAME": "bestmcp-billing-skuangles-sandbox-audit",
+    "CREDITS_QUEUE_NAME": "bestmcp-billing-skuangles-sandbox-credits"
+  }
+}
