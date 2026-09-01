@@ -16,6 +16,10 @@
 	"upload_source_maps": true,
 	"routes": [
 		{
+			"pattern": "auth.bestmcpservers.com",
+			"custom_domain": true
+		},
+		{
 			"pattern": "auth.editimages.app",
 			"custom_domain": true
 		},

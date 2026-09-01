@@ -120,7 +120,7 @@ describe('SKU Angles shared auth and billing', () => {
     expect(getInitialProductCredits('prod_skuangles')).toBe(1);
   });
 
-  it('uses the SKU Angles Google callback and accepts only its trusted return host', async () => {
+  it('uses the shared Google callback and accepts only the SKU Angles return host', async () => {
     const response = await SELF.fetch(
       'http://auth.skuangles.com/api/auth/google?returnUrl=https%3A%2F%2Fskuangles.com%2Faccount%2F',
       { redirect: 'manual' },
@@ -130,7 +130,7 @@ describe('SKU Angles shared auth and billing', () => {
     expect(response.status).toBe(302);
     expect(location.origin + location.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth');
     expect(location.searchParams.get('redirect_uri')).toBe(
-      'https://auth.skuangles.com/api/auth/google/callback',
+      'https://auth.bestmcpservers.com/api/auth/google/callback',
     );
   });
 
