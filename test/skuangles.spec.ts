@@ -110,7 +110,7 @@ describe('SKU Angles shared auth and billing', () => {
     expect(config).toMatchObject({
       productId: 'prod_skuangles',
       appUrl: 'https://skuangles.com',
-      oauthRedirectUri: 'https://auth.skuangles.com/api/auth/google/callback',
+      oauthRedirectUri: 'https://auth.bestmcpservers.com/api/auth/google/callback',
     });
     expect(getCheckoutReturnUrls(config!)).toEqual({
       successUrl: 'https://skuangles.com/account/?checkout=success',
@@ -118,6 +118,26 @@ describe('SKU Angles shared auth and billing', () => {
     });
     expect(requiresProductCreditsV2('prod_skuangles')).toBe(true);
     expect(getInitialProductCredits('prod_skuangles')).toBe(1);
+  });
+
+  it('maps the exact sandbox workers.dev host to the production SKU Angles product', () => {
+    const config = getProductConfigForHost('bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev');
+
+    expect(config).toMatchObject({
+      productId: 'prod_skuangles',
+      appUrl: 'https://skuangles.com',
+      oauthRedirectUri: 'https://auth.bestmcpservers.com/api/auth/google/callback',
+    });
+    expect(getCheckoutReturnUrls(config!)).toEqual({
+      successUrl: 'https://skuangles.com/account/?checkout=success',
+      cancelUrl: 'https://skuangles.com/pricing/?checkout=canceled',
+    });
+  });
+
+  it('rejects unknown workers.dev hosts instead of accepting a wildcard', () => {
+    expect(getProductConfigForHost('bestmcp-billing-other.xuanlinflow.workers.dev')).toBeNull();
+    expect(getProductConfigForHost('attacker-workers-dev.xuanlinflow.workers.dev')).toBeNull();
+    expect(getProductConfigForHost('skuangles.com.attacker.example')).toBeNull();
   });
 
   it('uses the shared Google callback and accepts only the SKU Angles return host', async () => {

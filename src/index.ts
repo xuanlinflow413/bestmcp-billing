@@ -12,6 +12,7 @@ import { imageRoutes } from './routes/images';
 import { handleWebhookQueue } from './queues/webhook';
 import { handleAuditQueue } from './queues/audit';
 import { handleCreditsQueue } from './queues/credits';
+import type { MessageBatch } from '@cloudflare/workers-types';
 import {
   asSkuanglesServiceRequest,
   isAllowedSkuanglesServiceRequest,
@@ -80,24 +81,30 @@ export class SkuanglesAccountService extends WorkerEntrypoint<Env> {
   }
 }
 
+export type QueueHandler = (batch: MessageBatch<any>, env: Env) => Promise<void>;
+
+export function resolveQueueHandler(queueName: string, env: Env): QueueHandler | null {
+  const webhookQueueName = env.WEBHOOK_QUEUE_NAME ?? 'bestmcp-billing-webhooks';
+  const auditQueueName = env.AUDIT_QUEUE_NAME ?? 'bestmcp-billing-audit';
+  const creditsQueueName = env.CREDITS_QUEUE_NAME ?? 'bestmcp-billing-credits';
+
+  if (queueName === webhookQueueName) return handleWebhookQueue;
+  if (queueName === auditQueueName) return handleAuditQueue;
+  if (queueName === creditsQueueName) return handleCreditsQueue;
+  return null;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return app.fetch(request, env, ctx);
   },
 
   async queue(batch: MessageBatch<any>, env: Env): Promise<void> {
-    switch (batch.queue) {
-      case 'bestmcp-billing-webhooks':
-        await handleWebhookQueue(batch, env);
-        break;
-      case 'bestmcp-billing-audit':
-        await handleAuditQueue(batch, env);
-        break;
-      case 'bestmcp-billing-credits':
-        await handleCreditsQueue(batch, env);
-        break;
-      default:
-        console.log(`Unknown queue: ${batch.queue}`);
+    const handler = resolveQueueHandler(batch.queue, env);
+    if (handler) {
+      await handler(batch, env);
+    } else {
+      console.log(`Unknown queue: ${batch.queue}`);
     }
   },
 

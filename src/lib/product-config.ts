@@ -120,6 +120,7 @@ export function getProductConfigForHost(host: string): ProductConfig | null {
     normalizedHost === 'skuangles.com'
     || normalizedHost === 'www.skuangles.com'
     || normalizedHost === 'auth.skuangles.com'
+    || normalizedHost === 'bestmcp-billing-skuangles-sandbox.xuanlinflow.workers.dev'
   ) {
     return SKUANGLES_CONFIG;
   }
