@@ -18,6 +18,7 @@ import { errorResponse, jsonResponse } from '../lib/utils';
 
 const billingRoutes = new Hono<AppContext>();
 const STRIPE_API_VERSION = '2026-05-27.dahlia';
+const SKUANGLES_LIVE_TEST_COUPON_MARKER = 'skuangles_live_test_coupon_applied';
 const SECURITY_AUDIT_PLAN_ID = 'plan_bestmcp_security_audit';
 const SECURITY_AUDIT_ASSETS: Record<string, { key: string; filename: string; contentType: string }> = {
   'audit-workbook': {
@@ -42,6 +43,23 @@ export function getCheckoutReturnUrls(productConfig: ProductConfig) {
     successUrl: `${productConfig.frontendUrl}${productConfig.checkoutSuccessPath}`,
     cancelUrl: `${productConfig.frontendUrl}${productConfig.checkoutCancelPath}`,
   };
+}
+
+function getSkuanglesLiveTestCouponId(
+  env: AppContext['Bindings'],
+  userId: string,
+  productId: string,
+  planId: string,
+): string | null {
+  const couponId = env.SKUANGLES_LIVE_TEST_COUPON_ID;
+  return env.SKUANGLES_LIVE_TEST_COUPON_ENABLED === '1'
+    && env.SKUANGLES_LIVE_TEST_USER_ID === userId
+    && productId === 'prod_skuangles'
+    && planId === 'skuangles-starter-monthly'
+    && typeof couponId === 'string'
+    && couponId.length > 0
+    ? couponId
+    : null;
 }
 
 async function authMiddleware(c: any, next: any) {
@@ -137,6 +155,13 @@ billingRoutes.post('/checkout', async (c) => {
     return errorResponse('Checkout is not configured for this plan', 503, 'CHECKOUT_UNAVAILABLE');
   }
 
+  const liveTestCouponId = getSkuanglesLiveTestCouponId(
+    c.env,
+    userId,
+    plan.product_id,
+    plan.id,
+  );
+  const shouldApplyLiveTestCoupon = liveTestCouponId !== null;
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
   const existingAttempt = await getCheckoutAttempt(c.env.DB, userId, plan.product_id);
@@ -154,16 +179,25 @@ billingRoutes.post('/checkout', async (c) => {
               'CHECKOUT_ALREADY_OPEN',
             );
           }
-          return jsonResponse({ sessionId: existingSession.id, url: existingSession.url });
+          const existingSessionHasLiveTestCoupon = existingSession.metadata?.[
+            SKUANGLES_LIVE_TEST_COUPON_MARKER
+          ] === '1';
+          if (existingSessionHasLiveTestCoupon !== shouldApplyLiveTestCoupon) {
+            await stripe.checkout.sessions.expire(existingSession.id);
+            await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
+          } else {
+            return jsonResponse({ sessionId: existingSession.id, url: existingSession.url });
+          }
+        } else {
+          if (existingSession.status === 'complete') {
+            return errorResponse(
+              'Checkout has completed and is being processed',
+              409,
+              'CHECKOUT_COMPLETED',
+            );
+          }
+          await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
         }
-        if (existingSession.status === 'complete') {
-          return errorResponse(
-            'Checkout has completed and is being processed',
-            409,
-            'CHECKOUT_COMPLETED',
-          );
-        }
-        await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
       } catch {
         return errorResponse('Checkout is temporarily unavailable', 503, 'CHECKOUT_UNAVAILABLE');
       }
@@ -259,6 +293,7 @@ billingRoutes.post('/checkout', async (c) => {
       plan_id: plan.id,
       product_id: plan.product_id,
       checkout_attempt_id: claimed.attempt.attempt_id,
+      ...(shouldApplyLiveTestCoupon ? { [SKUANGLES_LIVE_TEST_COUPON_MARKER]: '1' } : {}),
     };
     const sessionConfig: Stripe.Checkout.SessionCreateParams = {
       customer: customerId,
@@ -275,15 +310,7 @@ billingRoutes.post('/checkout', async (c) => {
       sessionConfig.subscription_data = { metadata };
     }
 
-    const liveTestCouponId = c.env.SKUANGLES_LIVE_TEST_COUPON_ID;
-    if (
-      c.env.SKUANGLES_LIVE_TEST_COUPON_ENABLED === '1'
-      && c.env.SKUANGLES_LIVE_TEST_USER_ID === userId
-      && plan.product_id === 'prod_skuangles'
-      && plan.id === 'skuangles-starter-monthly'
-      && typeof liveTestCouponId === 'string'
-      && liveTestCouponId.length > 0
-    ) {
+    if (liveTestCouponId) {
       sessionConfig.discounts = [{ coupon: liveTestCouponId }];
     }
 

@@ -7,6 +7,7 @@ import type { Env as WorkerEnv } from '../src/types';
 const stripeMocks = vi.hoisted(() => ({
   createCustomer: vi.fn(),
   createSession: vi.fn(),
+  expireSession: vi.fn(),
   retrieveSession: vi.fn(),
 }));
 
@@ -16,6 +17,7 @@ vi.mock('stripe', () => ({
     checkout = {
       sessions: {
         create: stripeMocks.createSession,
+        expire: stripeMocks.expireSession,
         retrieve: stripeMocks.retrieveSession,
       },
     };
@@ -123,16 +125,41 @@ async function createUser(stripeCustomerId: string | null = null) {
   return userId;
 }
 
-function mockOpenSession(id = `cs_test_${crypto.randomUUID()}`) {
+function mockOpenSession(
+  id = `cs_test_${crypto.randomUUID()}`,
+  metadata: Record<string, string> = {},
+) {
   const session = {
     id,
     status: 'open',
     url: `https://checkout.stripe.com/c/pay/${id}`,
     expires_at: Math.floor(Date.now() / 1000) + 3600,
+    metadata,
   };
   stripeMocks.createSession.mockResolvedValue(session);
   stripeMocks.retrieveSession.mockResolvedValue(session);
   return session;
+}
+
+async function createOpenSkuanglesAttempt(
+  userId: string,
+  session: ReturnType<typeof mockOpenSession>,
+) {
+  const attemptId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO checkout_attempts (
+    user_id, product_id, attempt_id, client_request_id, plan_id, owner_token,
+    status, stripe_checkout_session_id, session_expires_at, lock_expires_at
+  ) VALUES (?, 'prod_skuangles', ?, ?, 'skuangles-starter-monthly', ?,
+    'open', ?, ?, 0)`)
+    .bind(
+      userId,
+      attemptId,
+      crypto.randomUUID(),
+      crypto.randomUUID(),
+      session.id,
+      session.expires_at,
+    )
+    .run();
 }
 
 beforeAll(createCheckoutTables);
@@ -140,8 +167,10 @@ beforeAll(createCheckoutTables);
 beforeEach(() => {
   stripeMocks.createCustomer.mockReset();
   stripeMocks.createSession.mockReset();
+  stripeMocks.expireSession.mockReset();
   stripeMocks.retrieveSession.mockReset();
   stripeMocks.createCustomer.mockResolvedValue({ id: `cus_test_${crypto.randomUUID()}` });
+  stripeMocks.expireSession.mockResolvedValue({ status: 'expired' });
   mockOpenSession();
 });
 
@@ -217,6 +246,115 @@ describe('checkout route idempotency', () => {
 
     expect(response.status).toBe(200);
     expect(stripeMocks.createSession.mock.calls[0][0]).not.toHaveProperty('discounts');
+  });
+
+  it('expires an unmarked open session before creating the enabled test coupon session', async () => {
+    const userId = await createUser(`cus_${crypto.randomUUID()}`);
+    const existingSession = mockOpenSession('cs_test_unmarked_existing');
+    const replacementSession = {
+      ...existingSession,
+      id: 'cs_test_marked_replacement',
+      url: 'https://checkout.stripe.com/c/pay/cs_test_marked_replacement',
+    };
+    stripeMocks.createSession.mockResolvedValue(replacementSession);
+    await createOpenSkuanglesAttempt(userId, existingSession);
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      'skuangles-starter-monthly',
+      {
+        SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1',
+        SKUANGLES_LIVE_TEST_USER_ID: userId,
+        SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter',
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ url: replacementSession.url });
+    expect(stripeMocks.expireSession).toHaveBeenCalledOnce();
+    expect(stripeMocks.expireSession).toHaveBeenCalledWith(existingSession.id);
+    expect(stripeMocks.createSession).toHaveBeenCalledOnce();
+    const createdSession = stripeMocks.createSession.mock.calls[0][0];
+    expect(createdSession.discounts).toEqual([{ coupon: 'coupon_test_starter' }]);
+    expect(createdSession.metadata.skuangles_live_test_coupon_applied).toBe('1');
+    expect(Object.values(createdSession.metadata)).not.toContain('coupon_test_starter');
+  });
+
+  it('reuses a marked open session while the test coupon remains enabled', async () => {
+    const userId = await createUser(`cus_${crypto.randomUUID()}`);
+    const existingSession = mockOpenSession('cs_test_marked_existing', {
+      skuangles_live_test_coupon_applied: '1',
+    });
+    await createOpenSkuanglesAttempt(userId, existingSession);
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      'skuangles-starter-monthly',
+      {
+        SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1',
+        SKUANGLES_LIVE_TEST_USER_ID: userId,
+        SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter',
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ url: existingSession.url });
+    expect(stripeMocks.expireSession).not.toHaveBeenCalled();
+    expect(stripeMocks.createSession).not.toHaveBeenCalled();
+  });
+
+  it('expires a marked open session before creating a regular session when the gate is disabled', async () => {
+    const userId = await createUser(`cus_${crypto.randomUUID()}`);
+    const existingSession = mockOpenSession('cs_test_marked_disabled', {
+      skuangles_live_test_coupon_applied: '1',
+    });
+    const replacementSession = {
+      ...existingSession,
+      id: 'cs_test_regular_replacement',
+      url: 'https://checkout.stripe.com/c/pay/cs_test_regular_replacement',
+      metadata: {},
+    };
+    stripeMocks.createSession.mockResolvedValue(replacementSession);
+    await createOpenSkuanglesAttempt(userId, existingSession);
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      'skuangles-starter-monthly',
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ url: replacementSession.url });
+    expect(stripeMocks.expireSession).toHaveBeenCalledWith(existingSession.id);
+    expect(stripeMocks.createSession).toHaveBeenCalledOnce();
+    const createdSession = stripeMocks.createSession.mock.calls[0][0];
+    expect(createdSession).not.toHaveProperty('discounts');
+    expect(createdSession.metadata).not.toHaveProperty('skuangles_live_test_coupon_applied');
+  });
+
+  it('fails closed when an incompatible open session cannot be expired', async () => {
+    const userId = await createUser(`cus_${crypto.randomUUID()}`);
+    const existingSession = mockOpenSession('cs_test_expire_failure');
+    stripeMocks.expireSession.mockRejectedValue(new Error('Stripe unavailable'));
+    await createOpenSkuanglesAttempt(userId, existingSession);
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      'skuangles-starter-monthly',
+      {
+        SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1',
+        SKUANGLES_LIVE_TEST_USER_ID: userId,
+        SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter',
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'CHECKOUT_UNAVAILABLE' });
+    expect(stripeMocks.createSession).not.toHaveBeenCalled();
   });
 
   it('creates one payable session under concurrent requests and uses a user-stable customer key', async () => {
