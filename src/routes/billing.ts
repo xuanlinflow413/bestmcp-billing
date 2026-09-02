@@ -275,6 +275,18 @@ billingRoutes.post('/checkout', async (c) => {
       sessionConfig.subscription_data = { metadata };
     }
 
+    const liveTestCouponId = c.env.SKUANGLES_LIVE_TEST_COUPON_ID;
+    if (
+      c.env.SKUANGLES_LIVE_TEST_COUPON_ENABLED === '1'
+      && c.env.SKUANGLES_LIVE_TEST_USER_ID === userId
+      && plan.product_id === 'prod_skuangles'
+      && plan.id === 'skuangles-starter-monthly'
+      && typeof liveTestCouponId === 'string'
+      && liveTestCouponId.length > 0
+    ) {
+      sessionConfig.discounts = [{ coupon: liveTestCouponId }];
+    }
+
     const session = await stripe.checkout.sessions.create(sessionConfig, {
       idempotencyKey: await getStripeIdempotencyKey('checkout', claimed.attempt.attempt_id),
     });

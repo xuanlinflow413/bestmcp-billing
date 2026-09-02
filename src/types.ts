@@ -28,6 +28,11 @@ export interface Env {
   GOOGLE_OAUTH_REDIRECT_URI: string;
   PRODUCT_CREDITS_V2_PRODUCTS: string;
 
+  // Optional, server-only gate for a single SKU Angles live checkout test.
+  SKUANGLES_LIVE_TEST_COUPON_ENABLED?: string;
+  SKUANGLES_LIVE_TEST_USER_ID?: string;
+  SKUANGLES_LIVE_TEST_COUPON_ID?: string;
+
   // Optional queue-name overrides; production names remain the defaults.
   WEBHOOK_QUEUE_NAME?: string;
   AUDIT_QUEUE_NAME?: string;

@@ -1,6 +1,8 @@
 import { env, SELF } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getStripeIdempotencyKey } from '../src/lib/checkout-attempt';
+import { billingRoutes } from '../src/routes/billing';
+import type { Env as WorkerEnv } from '../src/types';
 
 const stripeMocks = vi.hoisted(() => ({
   createCustomer: vi.fn(),
@@ -92,6 +94,25 @@ function checkoutRequest(
   });
 }
 
+function checkoutRouteRequest(
+  host: string,
+  userId: string,
+  planId: string,
+  bindings: Partial<WorkerEnv>,
+  body: Record<string, unknown> = { plan_id: planId },
+) {
+  return billingRoutes.request(`http://${host}/checkout`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.INTERNAL_API_KEY}`,
+      'X-User-ID': userId,
+      'Content-Type': 'application/json',
+      'Idempotency-Key': crypto.randomUUID(),
+    },
+    body: JSON.stringify(body),
+  }, { ...env, ...bindings } as unknown as WorkerEnv);
+}
+
 async function createUser(stripeCustomerId: string | null = null) {
   const userId = `checkout-route-user-${crypto.randomUUID()}`;
   await env.DB.prepare(`INSERT INTO users (
@@ -125,6 +146,79 @@ beforeEach(() => {
 });
 
 describe('checkout route idempotency', () => {
+  it('applies exactly one server-configured coupon to the allowlisted SKU Angles Starter user', async () => {
+    const userId = await createUser();
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      'skuangles-starter-monthly',
+      {
+        SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1',
+        SKUANGLES_LIVE_TEST_USER_ID: userId,
+        SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter',
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(stripeMocks.createSession).toHaveBeenCalledOnce();
+    expect(stripeMocks.createSession.mock.calls[0][0].discounts).toEqual([
+      { coupon: 'coupon_test_starter' },
+    ]);
+  });
+
+  it.each([
+    [
+      'user does not match, even with a client coupon',
+      'skuangles-starter-monthly',
+      { SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1', SKUANGLES_LIVE_TEST_USER_ID: 'another-user', SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_server_only' },
+      { plan_id: 'skuangles-starter-monthly', coupon: 'coupon_client_supplied' },
+    ],
+    [
+      'plan is Pro',
+      'skuangles-pro-monthly',
+      { SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1', SKUANGLES_LIVE_TEST_USER_ID: 'TEST_USER', SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter' },
+      { plan_id: 'skuangles-pro-monthly' },
+    ],
+    [
+      'enabled flag is missing',
+      'skuangles-starter-monthly',
+      { SKUANGLES_LIVE_TEST_USER_ID: 'TEST_USER', SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter' },
+      { plan_id: 'skuangles-starter-monthly' },
+    ],
+    [
+      'test user binding is missing',
+      'skuangles-starter-monthly',
+      { SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1', SKUANGLES_LIVE_TEST_COUPON_ID: 'coupon_test_starter' },
+      { plan_id: 'skuangles-starter-monthly' },
+    ],
+    [
+      'coupon binding is missing',
+      'skuangles-starter-monthly',
+      { SKUANGLES_LIVE_TEST_COUPON_ENABLED: '1', SKUANGLES_LIVE_TEST_USER_ID: 'TEST_USER' },
+      { plan_id: 'skuangles-starter-monthly' },
+    ],
+  ])('does not apply a test coupon when the %s', async (_scenario, planId, configuredBindings, body) => {
+    const userId = await createUser();
+    const bindings = Object.fromEntries(
+      Object.entries(configuredBindings).map(([key, value]) => [
+        key,
+        value === 'TEST_USER' ? userId : value,
+      ]),
+    ) as Partial<WorkerEnv>;
+
+    const response = await checkoutRouteRequest(
+      'auth.skuangles.com',
+      userId,
+      planId,
+      bindings,
+      body,
+    );
+
+    expect(response.status).toBe(200);
+    expect(stripeMocks.createSession.mock.calls[0][0]).not.toHaveProperty('discounts');
+  });
+
   it('creates one payable session under concurrent requests and uses a user-stable customer key', async () => {
     const userId = await createUser();
     const session = mockOpenSession('cs_test_concurrent');
