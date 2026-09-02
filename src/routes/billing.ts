@@ -5,6 +5,15 @@ import { DbClient } from '../lib/db';
 import { verifySession, getSessionToken } from '../lib/auth';
 import { getProductConfigForRequest } from '../lib/product-config';
 import type { ProductConfig } from '../lib/product-config';
+import {
+  claimCheckoutAttempt,
+  getCheckoutAttempt,
+  getStripeIdempotencyKey,
+  isCheckoutRequestId,
+  markCheckoutAttemptExpired,
+  markCheckoutAttemptOpen,
+  shortenCheckoutAttemptLock,
+} from '../lib/checkout-attempt';
 import { errorResponse, jsonResponse } from '../lib/utils';
 
 const billingRoutes = new Hono<AppContext>();
@@ -97,6 +106,11 @@ billingRoutes.post('/checkout', async (c) => {
     .catch((): { plan_id?: string } => ({}));
   const planId = body.plan_id;
   if (!planId) return errorResponse('plan_id is required', 400);
+  const suppliedRequestId = c.req.header('Idempotency-Key');
+  if (suppliedRequestId && !isCheckoutRequestId(suppliedRequestId)) {
+    return errorResponse('Invalid checkout request ID', 400, 'INVALID_IDEMPOTENCY_KEY');
+  }
+  const clientRequestId = suppliedRequestId || crypto.randomUUID();
 
   const db = new DbClient(c.env.DB);
   const user = await db.getUserById(userId);
@@ -125,47 +139,159 @@ billingRoutes.post('/checkout', async (c) => {
 
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
-  // 获取或创建 Stripe Customer
-  let customerId = user.stripe_customer_id;
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      email: user.email,
-      name: user.name || undefined,
-      metadata: { user_id: userId },
-    });
-    customerId = customer.id;
-    await db.updateUserStripeCustomer(userId, customerId);
+  const existingAttempt = await getCheckoutAttempt(c.env.DB, userId, plan.product_id);
+  if (existingAttempt?.status === 'open') {
+    if (!existingAttempt.stripe_checkout_session_id) {
+      await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
+    } else {
+      try {
+        const existingSession = await stripe.checkout.sessions.retrieve(existingAttempt.stripe_checkout_session_id);
+        if (existingSession.status === 'open' && existingSession.url) {
+          if (existingAttempt.plan_id !== plan.id) {
+            return errorResponse(
+              'A checkout session is already open for another plan',
+              409,
+              'CHECKOUT_ALREADY_OPEN',
+            );
+          }
+          return jsonResponse({ sessionId: existingSession.id, url: existingSession.url });
+        }
+        if (existingSession.status === 'complete') {
+          return errorResponse(
+            'Checkout has completed and is being processed',
+            409,
+            'CHECKOUT_COMPLETED',
+          );
+        }
+        await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
+      } catch {
+        return errorResponse('Checkout is temporarily unavailable', 503, 'CHECKOUT_UNAVAILABLE');
+      }
+    }
+  } else if (existingAttempt?.status === 'completed') {
+    if (existingAttempt.client_request_id === clientRequestId) {
+      return errorResponse('Checkout has completed and is being processed', 409, 'CHECKOUT_COMPLETED');
+    }
+    const existingAttemptPlan = await db.getPlanById(existingAttempt.plan_id);
+    if (!existingAttemptPlan) {
+      return errorResponse('Checkout has completed and is being processed', 409, 'CHECKOUT_COMPLETED');
+    }
+    const existingAttemptWasSubscription = existingAttemptPlan.interval === 'month'
+      || existingAttemptPlan.interval === 'year';
+    const completedRecord = existingAttemptWasSubscription
+      ? await c.env.DB.prepare(`
+          SELECT s.id
+          FROM subscriptions s
+          JOIN plans p ON p.id = s.plan_id
+          WHERE s.user_id = ? AND p.product_id = ?
+          LIMIT 1
+        `).bind(
+          userId,
+          existingAttempt.product_id,
+        ).first<{ id: string }>()
+      : existingAttempt.stripe_checkout_session_id
+        ? await c.env.DB.prepare(`
+          SELECT id FROM purchases
+          WHERE user_id = ? AND plan_id = ? AND stripe_checkout_session_id = ? AND status = 'active'
+          LIMIT 1
+        `).bind(
+          userId,
+          existingAttempt.plan_id,
+          existingAttempt.stripe_checkout_session_id,
+        ).first<{ id: string }>()
+        : null;
+    if (!completedRecord) {
+      return errorResponse('Checkout has completed and is being processed', 409, 'CHECKOUT_COMPLETED');
+    }
+    await markCheckoutAttemptExpired(c.env.DB, existingAttempt);
+  } else if (
+    existingAttempt?.status === 'creating'
+    && existingAttempt.lock_expires_at > Math.floor(Date.now() / 1000)
+  ) {
+    return errorResponse('Checkout is already being prepared', 409, 'CHECKOUT_IN_PROGRESS');
   }
 
-  // 根据套餐类型决定 Checkout mode
-  const mode = isSubscription ? 'subscription' : 'payment';
+  const claimed = await claimCheckoutAttempt(
+    c.env.DB,
+    userId,
+    plan.product_id,
+    plan.id,
+    clientRequestId,
+  );
+  if (!claimed) {
+    return errorResponse('Checkout is already being prepared', 409, 'CHECKOUT_IN_PROGRESS');
+  }
+  if (claimed.attempt.plan_id !== plan.id) {
+    await shortenCheckoutAttemptLock(c.env.DB, claimed.attempt, claimed.ownerToken).catch(() => undefined);
+    return errorResponse(
+      'A checkout session is already being prepared for another plan',
+      409,
+      'CHECKOUT_ALREADY_OPEN',
+    );
+  }
 
-  const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = {
-    price: configuredPriceId,
-    quantity: 1,
-  };
+  try {
+    // 获取或创建 Stripe Customer
+    let customerId = user.stripe_customer_id;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        name: user.name || undefined,
+        metadata: { user_id: userId },
+      }, {
+        idempotencyKey: await getStripeIdempotencyKey('customer', userId),
+      });
+      customerId = customer.id;
+      await db.updateUserStripeCustomer(userId, customerId);
+    }
 
-  const returnUrls = getCheckoutReturnUrls(productConfig);
-  const sessionConfig: Stripe.Checkout.SessionCreateParams = {
-    customer: customerId,
-    mode,
-    payment_method_types: ['card'],
-    line_items: [lineItem],
-    success_url: returnUrls.successUrl,
-    cancel_url: returnUrls.cancelUrl,
-    metadata: { user_id: userId, plan_id: plan.id, product_id: plan.product_id },
-  };
+    // 根据套餐类型决定 Checkout mode
+    const mode = isSubscription ? 'subscription' : 'payment';
 
-  // 订阅模式需要 subscription_data
-  if (isSubscription) {
-    sessionConfig.subscription_data = {
-      metadata: { user_id: userId, plan_id: plan.id, product_id: plan.product_id },
+    const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = {
+      price: configuredPriceId,
+      quantity: 1,
     };
+
+    const returnUrls = getCheckoutReturnUrls(productConfig);
+    const metadata = {
+      user_id: userId,
+      plan_id: plan.id,
+      product_id: plan.product_id,
+      checkout_attempt_id: claimed.attempt.attempt_id,
+    };
+    const sessionConfig: Stripe.Checkout.SessionCreateParams = {
+      customer: customerId,
+      mode,
+      payment_method_types: ['card'],
+      line_items: [lineItem],
+      success_url: returnUrls.successUrl,
+      cancel_url: returnUrls.cancelUrl,
+      metadata,
+    };
+
+    // 订阅模式需要 subscription_data
+    if (isSubscription) {
+      sessionConfig.subscription_data = { metadata };
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionConfig, {
+      idempotencyKey: await getStripeIdempotencyKey('checkout', claimed.attempt.attempt_id),
+    });
+    if (!session.url) throw new Error('Stripe checkout session has no URL');
+    await markCheckoutAttemptOpen(
+      c.env.DB,
+      claimed.attempt,
+      claimed.ownerToken,
+      session.id,
+      session.expires_at,
+    );
+
+    return jsonResponse({ sessionId: session.id, url: session.url });
+  } catch {
+    await shortenCheckoutAttemptLock(c.env.DB, claimed.attempt, claimed.ownerToken).catch(() => undefined);
+    return errorResponse('Checkout is temporarily unavailable', 503, 'CHECKOUT_UNAVAILABLE');
   }
-
-  const session = await stripe.checkout.sessions.create(sessionConfig);
-
-  return jsonResponse({ sessionId: session.id, url: session.url });
 });
 
 /**

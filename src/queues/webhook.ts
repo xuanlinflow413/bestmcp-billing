@@ -1,6 +1,7 @@
 import type { MessageBatch } from '@cloudflare/workers-types';
 import Stripe from 'stripe';
 import { DbClient, type Plan, type Subscription } from '../lib/db';
+import { markCheckoutAttemptCompleted } from '../lib/checkout-attempt';
 import { requiresProductCreditsV2, usesProductCreditsV2 } from '../lib/product-config';
 import type { Env } from '../types';
 
@@ -309,6 +310,7 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
           const session = data as Stripe.Checkout.Session;
           const userId = session.metadata?.user_id;
           if (!userId) break;
+          let checkoutProcessed = false;
 
           // 处理订阅支付：只创建/更新 subscription，不发放 credits
           // credits 由 invoice.paid 处理，避免重复发放
@@ -330,6 +332,7 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
                 userId,
                 getStripeObjectId(session.customer) || getStripeObjectId(subscription.customer),
               );
+              checkoutProcessed = true;
               // 注意：订阅的 credits 发放由 invoice.paid 处理，不在此处发放
               console.log(`Subscription ${subscription.id} created/updated for user ${userId}, credits will be granted on invoice.paid`);
             }
@@ -353,9 +356,21 @@ export async function handleWebhookQueue(batch: MessageBatch<WebhookMessage>, en
                     await db.addCredits(userId, plan.credits_per_period, 'purchase', `One-time purchase: ${plan.name}`, session.id, getProductSlug(plan.product_id) || undefined);
                   }
                 }
+                checkoutProcessed = true;
                 console.log(`${purchaseCreated ? 'Recorded' : 'Skipped duplicate'} purchase ${session.id} for ${plan.name}; credits=${plan.credits_per_period}`);
               }
             }
+          }
+          const checkoutAttemptId = session.metadata?.checkout_attempt_id;
+          const checkoutProductId = session.metadata?.product_id;
+          if (checkoutProcessed && checkoutAttemptId && checkoutProductId) {
+            await markCheckoutAttemptCompleted(
+              env.DB,
+              userId,
+              checkoutProductId,
+              checkoutAttemptId,
+              session.id,
+            );
           }
           break;
         }
